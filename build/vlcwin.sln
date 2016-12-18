@@ -1,0 +1,58 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 10.00
+# Visual Studio 2008
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "vlcwin", "vlcwin\vlcwin.vcproj", "{7E3363F9-AD51-4D81-82C2-E11EA26C5C37}"
+	ProjectSection(ProjectDependencies) = postProject
+		{E0E2A916-7603-4B18-91B7-DF2FF7E5B484} = {E0E2A916-7603-4B18-91B7-DF2FF7E5B484}
+		{258AE776-E8A3-4DE9-8DAD-ADFC77182277} = {258AE776-E8A3-4DE9-8DAD-ADFC77182277}
+	EndProjectSection
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "libvlc", "libvlc\libvlc.vcproj", "{E0E2A916-7603-4B18-91B7-DF2FF7E5B484}"
+	ProjectSection(ProjectDependencies) = postProject
+		{258AE776-E8A3-4DE9-8DAD-ADFC77182277} = {258AE776-E8A3-4DE9-8DAD-ADFC77182277}
+		{84C73A86-D0D7-4749-9584-FFCB67886182} = {84C73A86-D0D7-4749-9584-FFCB67886182}
+	EndProjectSection
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "libcompat", "libcompat\libcompat.vcproj", "{84C73A86-D0D7-4749-9584-FFCB67886182}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "libvlccore", "libvlccore\libvlccore.vcproj", "{258AE776-E8A3-4DE9-8DAD-ADFC77182277}"
+	ProjectSection(ProjectDependencies) = postProject
+		{84C73A86-D0D7-4749-9584-FFCB67886182} = {84C73A86-D0D7-4749-9584-FFCB67886182}
+	EndProjectSection
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "libplugin", "lib_plugin\lib_plugin.vcproj", "{DE294D83-BAC7-4A21-8B27-16EEAD492B7E}"
+	ProjectSection(ProjectDependencies) = postProject
+		{258AE776-E8A3-4DE9-8DAD-ADFC77182277} = {258AE776-E8A3-4DE9-8DAD-ADFC77182277}
+	EndProjectSection
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Win32 = Debug|Win32
+		Release|Win32 = Release|Win32
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{7E3363F9-AD51-4D81-82C2-E11EA26C5C37}.Debug|Win32.ActiveCfg = Debug|Win32
+		{7E3363F9-AD51-4D81-82C2-E11EA26C5C37}.Debug|Win32.Build.0 = Debug|Win32
+		{7E3363F9-AD51-4D81-82C2-E11EA26C5C37}.Release|Win32.ActiveCfg = Release|Win32
+		{7E3363F9-AD51-4D81-82C2-E11EA26C5C37}.Release|Win32.Build.0 = Release|Win32
+		{E0E2A916-7603-4B18-91B7-DF2FF7E5B484}.Debug|Win32.ActiveCfg = Debug|Win32
+		{E0E2A916-7603-4B18-91B7-DF2FF7E5B484}.Debug|Win32.Build.0 = Debug|Win32
+		{E0E2A916-7603-4B18-91B7-DF2FF7E5B484}.Release|Win32.ActiveCfg = Release|Win32
+		{E0E2A916-7603-4B18-91B7-DF2FF7E5B484}.Release|Win32.Build.0 = Release|Win32
+		{84C73A86-D0D7-4749-9584-FFCB67886182}.Debug|Win32.ActiveCfg = Debug|Win32
+		{84C73A86-D0D7-4749-9584-FFCB67886182}.Debug|Win32.Build.0 = Debug|Win32
+		{84C73A86-D0D7-4749-9584-FFCB67886182}.Release|Win32.ActiveCfg = Release|Win32
+		{84C73A86-D0D7-4749-9584-FFCB67886182}.Release|Win32.Build.0 = Release|Win32
+		{258AE776-E8A3-4DE9-8DAD-ADFC77182277}.Debug|Win32.ActiveCfg = Debug|Win32
+		{258AE776-E8A3-4DE9-8DAD-ADFC77182277}.Debug|Win32.Build.0 = Debug|Win32
+		{258AE776-E8A3-4DE9-8DAD-ADFC77182277}.Release|Win32.ActiveCfg = Release|Win32
+		{258AE776-E8A3-4DE9-8DAD-ADFC77182277}.Release|Win32.Build.0 = Release|Win32
+		{DE294D83-BAC7-4A21-8B27-16EEAD492B7E}.Debug|Win32.ActiveCfg = Debug|Win32
+		{DE294D83-BAC7-4A21-8B27-16EEAD492B7E}.Debug|Win32.Build.0 = Debug|Win32
+		{DE294D83-BAC7-4A21-8B27-16EEAD492B7E}.Release|Win32.ActiveCfg = Release|Win32
+		{DE294D83-BAC7-4A21-8B27-16EEAD492B7E}.Release|Win32.Build.0 = Release|Win32
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal
