@@ -241,6 +241,7 @@ static int OpenDecoder( vlc_object_t *p_this )
     p_sys->p_info = mpeg2_info( p_sys->p_mpeg2dec );
 
     p_dec->pf_decode_video = DecodeBlock;
+    p_dec->pf_flush        = Reset;
     p_dec->fmt_out.i_cat = VIDEO_ES;
     p_dec->fmt_out.i_codec = 0;
 
@@ -261,7 +262,7 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
         return NULL;
 
     p_block = *pp_block;
-    if( p_block->i_flags & (BLOCK_FLAG_DISCONTINUITY | BLOCK_FLAG_CORRUPTED) )
+    if( p_block->i_flags & (BLOCK_FLAG_CORRUPTED) )
         Reset( p_dec );
 
     while( 1 )
@@ -388,7 +389,7 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
 
             picture_t *p_pic;
 
-            if( !p_dec->b_pace_control && !p_sys->b_preroll &&
+            if( p_dec->b_frame_drop_allowed && !p_sys->b_preroll &&
                 !(p_sys->b_slice_i
                    && ((p_current->flags
                          & PIC_MASK_CODING_TYPE) == PIC_FLAG_CODING_TYPE_P))
@@ -441,14 +442,14 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
                 if( p_sys->i_gop_user_data > 2 )
                 {
                     /* We now have picture info for any cached user_data out of the gop */
-                    cc_Extract( &p_sys->cc, b_top_field_first,
+                    cc_ProbeAndExtract( &p_sys->cc, b_top_field_first,
                                 &p_sys->p_gop_user_data[0], p_sys->i_gop_user_data );
                     p_sys->i_gop_user_data = 0;
                 }
 
                 /* Extract the CC from the user_data of the picture */
                 if( p_info->user_data_len > 2 )
-                    cc_Extract( &p_sys->cc, b_top_field_first,
+                    cc_ProbeAndExtract( &p_sys->cc, b_top_field_first,
                                 &p_info->user_data[0], p_info->user_data_len );
             }
         }
@@ -657,6 +658,8 @@ static picture_t *GetNewPicture( decoder_t *p_dec )
         VLC_CODEC_I420 : VLC_CODEC_I422;
 
     /* Get a new picture */
+    if( decoder_UpdateVideoFormat( p_dec ) )
+        return NULL;
     p_pic = decoder_NewPicture( p_dec );
 
     if( p_pic == NULL )
@@ -680,9 +683,8 @@ static block_t *GetCc( decoder_t *p_dec, bool pb_present[4] )
 {
     decoder_sys_t   *p_sys = p_dec->p_sys;
     block_t         *p_cc = NULL;
-    int i;
 
-    for( i = 0; i < 4; i++ )
+    for( int i = 0; i < 4; i++ )
         pb_present[i] = p_sys->cc.pb_present[i];
 
     if( p_sys->cc.i_data <= 0 )

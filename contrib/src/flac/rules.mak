@@ -9,12 +9,16 @@ PKGS_FOUND += flac
 endif
 
 $(TARBALLS)/flac-$(FLAC_VERSION).tar.xz:
-	$(call download,$(FLAC_URL))
+	$(call download_pkg,$(FLAC_URL),flac)
 
 .sum-flac: flac-$(FLAC_VERSION).tar.xz
 
 flac: flac-$(FLAC_VERSION).tar.xz .sum-flac
 	$(UNPACK)
+ifdef HAVE_WINSTORE
+	$(APPLY) $(SRC)/flac/console_write.patch
+	$(APPLY) $(SRC)/flac/remove_blocking_code_useless_flaclib.patch
+endif
 ifdef HAVE_DARWIN_OS
 	cd $(UNPACK_DIR) && sed -e 's,-dynamiclib,-dynamiclib -arch $(ARCH),' -i.orig configure
 endif
@@ -45,6 +49,7 @@ endif
 FLAC_CFLAGS := $(CFLAGS)
 ifdef HAVE_WIN32
 FLAC_CFLAGS += -mstackrealign
+FLAC_CFLAGS +="-DFLAC__NO_DLL"
 endif
 
 DEPS_flac = ogg $(DEPS_ogg)

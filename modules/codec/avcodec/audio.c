@@ -36,12 +36,13 @@
 #include <vlc_codec.h>
 #include <vlc_avcodec.h>
 
+#include "avcodec.h"
+
 #include <libavcodec/avcodec.h>
 #include <libavutil/mem.h>
 
-#include <libavutil/audioconvert.h>
+#include <libavutil/channel_layout.h>
 
-#include "avcodec.h"
 
 /*****************************************************************************
  * decoder_sys_t : decoder descriptor
@@ -49,6 +50,9 @@
 struct decoder_sys_t
 {
     AVCODEC_COMMON_MEMBERS
+
+    block_t *p_decoded;
+    block_t **pp_decoded_last;
 
     /*
      * Output properties
@@ -69,7 +73,9 @@ struct decoder_sys_t
 #define BLOCK_FLAG_PRIVATE_REALLOCATED (1 << BLOCK_FLAG_PRIVATE_SHIFT)
 
 static void SetupOutputFormat( decoder_t *p_dec, bool b_trust );
+static block_t * ConvertAVFrame( decoder_t *p_dec, AVFrame *frame );
 static block_t *DecodeAudio( decoder_t *, block_t ** );
+static void Flush( decoder_t * );
 
 static void InitDecoderConfig( decoder_t *p_dec, AVCodecContext *p_context )
 {
@@ -186,6 +192,34 @@ static block_t *vlc_av_frame_Wrap(AVFrame *frame)
     return block;
 }
 
+static block_t * DequeueOneDecodedFrame( decoder_sys_t *p_sys )
+{
+    block_t *p_decoded = p_sys->p_decoded;
+    p_sys->p_decoded = p_sys->p_decoded->p_next;
+    if( p_sys->p_decoded == NULL )
+        p_sys->pp_decoded_last = &p_sys->p_decoded;
+    p_decoded->p_next = NULL;
+    return p_decoded;
+}
+
+/*****************************************************************************
+ * EndAudio: decoder destruction
+ *****************************************************************************
+ * This function is called when the thread ends after a successful
+ * initialization.
+ *****************************************************************************/
+void EndAudioDec( decoder_t *p_dec )
+{
+    decoder_sys_t *p_sys = p_dec->p_sys;
+    if( p_sys->p_decoded )
+    {
+        block_ChainRelease( p_sys->p_decoded );
+        p_sys->p_decoded = NULL;
+        p_sys->pp_decoded_last = &p_sys->p_decoded;
+    }
+    ffmpeg_CloseCodec( p_dec );
+}
+
 /*****************************************************************************
  * InitAudioDec: initialize audio decoder
  *****************************************************************************
@@ -201,6 +235,9 @@ int InitAudioDec( decoder_t *p_dec, AVCodecContext *p_context,
     {
         return VLC_ENOMEM;
     }
+
+    p_sys->p_decoded = NULL;
+    p_sys->pp_decoded_last = &p_sys->p_decoded;
 
     p_context->refcounted_frames = true;
     p_sys->p_context = p_context;
@@ -234,7 +271,31 @@ int InitAudioDec( decoder_t *p_dec, AVCodecContext *p_context,
         date_Init( &p_sys->end_date, p_dec->fmt_in.audio.i_rate, 1 );
 
     p_dec->pf_decode_audio = DecodeAudio;
+    p_dec->pf_flush        = Flush;
     return VLC_SUCCESS;
+}
+
+/*****************************************************************************
+ * Flush:
+ *****************************************************************************/
+static void Flush( decoder_t *p_dec )
+{
+    decoder_sys_t *p_sys = p_dec->p_sys;
+    AVCodecContext *ctx = p_sys->p_context;
+
+    avcodec_flush_buffers( ctx );
+    date_Set( &p_sys->end_date, VLC_TS_INVALID );
+
+    if( ctx->codec_id == AV_CODEC_ID_MP2 ||
+        ctx->codec_id == AV_CODEC_ID_MP3 )
+        p_sys->i_reject_count = 3;
+
+    if( p_sys->p_decoded )
+    {
+        block_ChainRelease( p_sys->p_decoded );
+        p_sys->p_decoded = NULL;
+        p_sys->pp_decoded_last = &p_sys->p_decoded;
+    }
 }
 
 /*****************************************************************************
@@ -244,11 +305,8 @@ static block_t *DecodeAudio( decoder_t *p_dec, block_t **pp_block )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
     AVCodecContext *ctx = p_sys->p_context;
-
-    if( !pp_block || !*pp_block )
-        return NULL;
-
-    block_t *p_block = *pp_block;
+    AVFrame *frame = NULL;
+    block_t *p_block = NULL;
 
     if( !ctx->extradata_size && p_dec->fmt_in.i_extra && p_sys->b_delayed_open)
     {
@@ -257,155 +315,202 @@ static block_t *DecodeAudio( decoder_t *p_dec, block_t **pp_block )
     }
 
     if( p_sys->b_delayed_open )
-        goto end;
-
-    if( p_block->i_flags & (BLOCK_FLAG_DISCONTINUITY|BLOCK_FLAG_CORRUPTED) )
     {
-        avcodec_flush_buffers( ctx );
-        date_Set( &p_sys->end_date, VLC_TS_INVALID );
-
-        if( ctx->codec_id == AV_CODEC_ID_MP2 ||
-            ctx->codec_id == AV_CODEC_ID_MP3 )
-            p_sys->i_reject_count = 3;
-
-        goto end;
+        if( pp_block )
+            p_block = *pp_block;
+        goto drop;
     }
 
-    /* We've just started the stream, wait for the first PTS. */
-    if( !date_Get( &p_sys->end_date ) && p_block->i_pts <= VLC_TS_INVALID )
-        goto end;
+    /* Flushing or decoding, we return any block ready from multiple frames output */
+    if( p_sys->p_decoded )
+        return DequeueOneDecodedFrame( p_sys );
 
-    if( p_block->i_buffer <= 0 )
-        goto end;
-
-    if( (p_block->i_flags & BLOCK_FLAG_PRIVATE_REALLOCATED) == 0 )
+    if( pp_block == NULL ) /* Drain request */
     {
-        p_block = block_Realloc( p_block, 0, p_block->i_buffer + FF_INPUT_BUFFER_PADDING_SIZE );
-        if( !p_block )
-            return NULL;
-        *pp_block = p_block;
-        p_block->i_buffer -= FF_INPUT_BUFFER_PADDING_SIZE;
-        memset( &p_block->p_buffer[p_block->i_buffer], 0, FF_INPUT_BUFFER_PADDING_SIZE );
-
-        p_block->i_flags |= BLOCK_FLAG_PRIVATE_REALLOCATED;
+        /* we don't need to care about return val */
+        (void) avcodec_send_packet( ctx, NULL );
+    }
+    else
+    {
+        p_block = *pp_block;
     }
 
-    AVFrame *frame = av_frame_alloc();
+    if( p_block )
+    {
+        if( p_block->i_flags & BLOCK_FLAG_CORRUPTED )
+        {
+            Flush( p_dec );
+            goto drop;
+        }
+
+        if( p_block->i_flags & BLOCK_FLAG_DISCONTINUITY )
+        {
+            date_Set( &p_sys->end_date, VLC_TS_INVALID );
+        }
+
+        /* We've just started the stream, wait for the first PTS. */
+        if( !date_Get( &p_sys->end_date ) && p_block->i_pts <= VLC_TS_INVALID )
+            goto drop;
+
+        if( p_block->i_buffer <= 0 )
+            goto drop;
+
+        if( (p_block->i_flags & BLOCK_FLAG_PRIVATE_REALLOCATED) == 0 )
+        {
+            p_block = block_Realloc( p_block, 0, p_block->i_buffer + FF_INPUT_BUFFER_PADDING_SIZE );
+            if( !p_block )
+                return NULL;
+            *pp_block = p_block;
+            p_block->i_buffer -= FF_INPUT_BUFFER_PADDING_SIZE;
+            memset( &p_block->p_buffer[p_block->i_buffer], 0, FF_INPUT_BUFFER_PADDING_SIZE );
+
+            p_block->i_flags |= BLOCK_FLAG_PRIVATE_REALLOCATED;
+        }
+    }
+
+    frame = av_frame_alloc();
     if (unlikely(frame == NULL))
         goto end;
 
-    for( int got_frame = 0; !got_frame; )
+    for( int ret = 0; ret == 0; )
     {
-        if( p_block->i_buffer == 0 )
-            goto end;
-
-        AVPacket pkt;
-        av_init_packet( &pkt );
-        pkt.data = p_block->p_buffer;
-        pkt.size = p_block->i_buffer;
-
-        int used = avcodec_decode_audio4( ctx, frame, &got_frame, &pkt );
-        if( used < 0 )
+        /* Feed in the loop as buffer could have been full on first iterations */
+        if( p_block )
         {
-            msg_Warn( p_dec, "cannot decode one frame (%zu bytes)",
-                      p_block->i_buffer );
-            goto end;
+            AVPacket pkt;
+            av_init_packet( &pkt );
+            pkt.data = p_block->p_buffer;
+            pkt.size = p_block->i_buffer;
+            ret = avcodec_send_packet( ctx, &pkt );
+            if( ret == 0 ) /* Block has been consumed */
+            {
+                /* Only set new pts from input block if it has been used,
+                 * otherwise let it be through interpolation */
+                if( p_block->i_pts > date_Get( &p_sys->end_date ) )
+                {
+                    date_Set( &p_sys->end_date, p_block->i_pts );
+                }
+
+                block_Release( p_block );
+                *pp_block = p_block = NULL;
+
+                /* FIXME: Should those init be really done after block and not frame ? */
+                SetupOutputFormat( p_dec, true );
+                if( decoder_UpdateAudioFormat( p_dec ) )
+                    goto drop;
+            }
+            else if ( ret != AVERROR(EAGAIN) ) /* Errors other than buffer full */
+            {
+                if( ret == AVERROR(ENOMEM) || ret == AVERROR(EINVAL) )
+                    goto end;
+                else
+                    goto drop;
+            }
         }
 
-        assert( p_block->i_buffer >= (unsigned)used );
-        if( used > p_block->i_buffer )
-            used = p_block->i_buffer;
+        /* Try to read one or multiple frames */
+        ret = avcodec_receive_frame( ctx, frame );
+        if( ret == 0 )
+        {
+            /* checks and init from first decoded frame */
+            if( ctx->channels <= 0 || ctx->channels > 8 || ctx->sample_rate <= 0 )
+            {
+                msg_Warn( p_dec, "invalid audio properties channels count %d, sample rate %d",
+                          ctx->channels, ctx->sample_rate );
+                goto drop;
+            }
+            else if( p_dec->fmt_out.audio.i_rate != (unsigned int)ctx->sample_rate )
+            {
+                date_Init( &p_sys->end_date, ctx->sample_rate, 1 );
+            }
 
-        p_block->p_buffer += used;
-        p_block->i_buffer -= used;
-    }
+            block_t *p_converted = ConvertAVFrame( p_dec, frame ); /* Consumes frame */
+            if( p_converted )
+            {
+                /* Silent unwanted samples */
+                if( p_sys->i_reject_count > 0 )
+                {
+                    memset( p_converted->p_buffer, 0, p_converted->i_buffer );
+                    p_sys->i_reject_count--;
+                }
+                p_converted->i_buffer = p_converted->i_nb_samples
+                                      * p_dec->fmt_out.audio.i_bytes_per_frame;
+                p_converted->i_pts = date_Get( &p_sys->end_date );
+                p_converted->i_length = date_Increment( &p_sys->end_date,
+                                                      p_converted->i_nb_samples ) - p_converted->i_pts;
 
-    if( ctx->channels <= 0 || ctx->channels > 8 || ctx->sample_rate <= 0 )
+                block_ChainLastAppend( &p_sys->pp_decoded_last, p_converted );
+            }
+
+            /* Prepare new frame */
+            frame = av_frame_alloc();
+            if (unlikely(frame == NULL))
+                break;
+        }
+        else av_frame_free( &frame );
+    };
+
+    return ( p_sys->p_decoded ) ? DequeueOneDecodedFrame( p_sys ) : NULL;
+
+end:
+    p_dec->b_error = true;
+    if( pp_block )
     {
-        msg_Warn( p_dec, "invalid audio properties channels count %d, sample rate %d",
-                  ctx->channels, ctx->sample_rate );
-        goto end;
-    }
-
-    if( p_dec->fmt_out.audio.i_rate != (unsigned int)ctx->sample_rate )
-        date_Init( &p_sys->end_date, ctx->sample_rate, 1 );
-
-    if( p_block->i_pts > date_Get( &p_sys->end_date ) )
-    {
-        date_Set( &p_sys->end_date, p_block->i_pts );
-    }
-
-    if( p_block->i_buffer == 0 )
-    {   /* Done with this buffer */
-        block_Release( p_block );
-        p_block = NULL;
+        assert( *pp_block == p_block );
         *pp_block = NULL;
     }
+drop:
+    if( p_block != NULL )
+        block_Release(p_block);
+    return NULL;
+}
 
-    /* NOTE WELL: Beyond this point, p_block refers to the DECODED block! */
-    SetupOutputFormat( p_dec, true );
-    if( decoder_UpdateAudioFormat( p_dec ) )
-        goto drop;
+static block_t * ConvertAVFrame( decoder_t *p_dec, AVFrame *frame )
+{
+    decoder_sys_t *p_sys = p_dec->p_sys;
+    AVCodecContext *ctx = p_sys->p_context;
+    block_t *p_block;
 
     /* Interleave audio if required */
     if( av_sample_fmt_is_planar( ctx->sample_fmt ) )
     {
         p_block = block_Alloc(frame->linesize[0] * ctx->channels);
-        if (unlikely(p_block == NULL))
-            goto drop;
+        if ( likely(p_block) )
+        {
+            const void *planes[ctx->channels];
+            for (int i = 0; i < ctx->channels; i++)
+                planes[i] = frame->extended_data[i];
 
-        const void *planes[ctx->channels];
-        for (int i = 0; i < ctx->channels; i++)
-            planes[i] = frame->extended_data[i];
-
-        aout_Interleave(p_block->p_buffer, planes, frame->nb_samples,
-                        ctx->channels, p_dec->fmt_out.audio.i_format);
-        p_block->i_nb_samples = frame->nb_samples;
+            aout_Interleave(p_block->p_buffer, planes, frame->nb_samples,
+                            ctx->channels, p_dec->fmt_out.audio.i_format);
+            p_block->i_nb_samples = frame->nb_samples;
+        }
         av_frame_free(&frame);
     }
     else
     {
         p_block = vlc_av_frame_Wrap(frame);
-        if (unlikely(p_block == NULL))
-            goto drop;
+        frame = NULL;
     }
 
-    if (p_sys->b_extract)
+    if (p_sys->b_extract && p_block)
     {   /* TODO: do not drop channels... at least not here */
         block_t *p_buffer = block_Alloc( p_dec->fmt_out.audio.i_bytes_per_frame
                                          * p_block->i_nb_samples );
-        if( unlikely(p_buffer == NULL) )
-            goto drop;
-        aout_ChannelExtract( p_buffer->p_buffer,
-                             p_dec->fmt_out.audio.i_channels,
-                             p_block->p_buffer, ctx->channels,
-                             p_block->i_nb_samples, p_sys->pi_extraction,
-                             p_dec->fmt_out.audio.i_bitspersample );
-        p_buffer->i_nb_samples = p_block->i_nb_samples;
+        if( likely(p_buffer) )
+        {
+            aout_ChannelExtract( p_buffer->p_buffer,
+                                 p_dec->fmt_out.audio.i_channels,
+                                 p_block->p_buffer, ctx->channels,
+                                 p_block->i_nb_samples, p_sys->pi_extraction,
+                                 p_dec->fmt_out.audio.i_bitspersample );
+            p_buffer->i_nb_samples = p_block->i_nb_samples;
+        }
         block_Release( p_block );
         p_block = p_buffer;
     }
 
-    /* Silent unwanted samples */
-    if( p_sys->i_reject_count > 0 )
-    {
-        memset( p_block->p_buffer, 0, p_block->i_buffer );
-        p_sys->i_reject_count--;
-    }
-
-    p_block->i_buffer = p_block->i_nb_samples
-                        * p_dec->fmt_out.audio.i_bytes_per_frame;
-    p_block->i_pts = date_Get( &p_sys->end_date );
-    p_block->i_length = date_Increment( &p_sys->end_date,
-                                      p_block->i_nb_samples ) - p_block->i_pts;
     return p_block;
-
-end:
-    *pp_block = NULL;
-drop:
-    if( p_block != NULL )
-        block_Release(p_block);
-    return NULL;
 }
 
 /*****************************************************************************
@@ -473,34 +578,28 @@ static void SetupOutputFormat( decoder_t *p_dec, bool b_trust )
         p_sys->i_previous_layout = p_sys->p_context->channel_layout;
     }
 
-    /* Specified order
-     * FIXME should we use fmt_in.audio.i_physical_channels or not ?
-     */
-    const unsigned i_order_max = 8 * sizeof(p_sys->p_context->channel_layout);
+    const unsigned i_order_max = sizeof(pi_channels_map)/sizeof(*pi_channels_map);
     uint32_t pi_order_src[i_order_max];
-    int i_channels_src = 0;
 
-    if( p_sys->p_context->channel_layout )
+    int i_channels_src = 0;
+    int64_t channel_layout =
+        p_sys->p_context->channel_layout ? p_sys->p_context->channel_layout :
+        av_get_default_channel_layout( p_sys->p_context->channels );
+
+    if( channel_layout )
     {
-        for( unsigned i = 0; i < sizeof(pi_channels_map)/sizeof(*pi_channels_map); i++ )
+        for( unsigned i = 0; i < i_order_max
+         && i_channels_src < p_sys->p_context->channels; i++ )
         {
-            if( p_sys->p_context->channel_layout & pi_channels_map[i][0] )
+            if( channel_layout & pi_channels_map[i][0] )
                 pi_order_src[i_channels_src++] = pi_channels_map[i][1];
         }
+
+        if( i_channels_src != p_sys->p_context->channels && b_trust )
+            msg_Err( p_dec, "Channel layout not understood" );
     }
     else
-    {
-        /* Create default order  */
-        if( b_trust )
-            msg_Warn( p_dec, "Physical channel configuration not set : guessing" );
-        for( unsigned int i = 0; i < __MIN( i_order_max, (unsigned)p_sys->p_context->channels ); i++ )
-        {
-            if( i < sizeof(pi_channels_map)/sizeof(*pi_channels_map) )
-                pi_order_src[i_channels_src++] = pi_channels_map[i][1];
-        }
-    }
-    if( i_channels_src != p_sys->p_context->channels && b_trust )
-        msg_Err( p_dec, "Channel layout not understood" );
+        msg_Warn( p_dec, "no channel layout found");
 
     uint32_t i_layout_dst;
     int      i_channels_dst;

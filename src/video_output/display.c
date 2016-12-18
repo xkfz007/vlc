@@ -1,5 +1,5 @@
 /*****************************************************************************
- * display.c: "vout display" managment
+ * display.c: "vout display" management
  *****************************************************************************
  * Copyright (C) 2009 Laurent Aimar
  * $Id$
@@ -35,6 +35,8 @@
 #include <vlc_vout.h>
 #include <vlc_block.h>
 #include <vlc_modules.h>
+#include <vlc_filter.h>
+#include <vlc_picture_pool.h>
 
 #include <libvlc.h>
 
@@ -91,7 +93,7 @@ static vout_display_t *vout_display_New(vlc_object_t *obj,
     vd->info.has_double_click = false;
     vd->info.has_hide_mouse = false;
     vd->info.has_pictures_invalid = false;
-    vd->info.has_event_thread = false;
+    vd->info.needs_event_thread = false;
     vd->info.subpicture_chromas = NULL;
 
     vd->cfg = cfg;
@@ -229,13 +231,20 @@ void vout_display_PlacePicture(vout_display_place_t *place,
     /* And the same but switching width/height */
     const int64_t scaled_width  = (int64_t)width  * display_height * cfg->display.sar.den * source->i_sar_num / height / source->i_sar_den / cfg->display.sar.num;
 
-    /* We keep the solution that avoid filling outside the display */
-    if (scaled_width <= cfg->display.width) {
-        place->width  = scaled_width;
-        place->height = display_height;
+    if (source->projection_mode == PROJECTION_MODE_RECTANGULAR) {
+        /* We keep the solution that avoid filling outside the display */
+        if (scaled_width <= cfg->display.width) {
+            place->width  = scaled_width;
+            place->height = display_height;
+        } else {
+            place->width  = display_width;
+            place->height = scaled_height;
+        }
     } else {
+        /* No need to preserve an aspect ratio for 360 video.
+         * They can fill the display. */
         place->width  = display_width;
-        place->height = scaled_height;
+        place->height = display_height;
     }
 
     /*  Compute position */
@@ -371,6 +380,9 @@ struct vout_display_owner_sys_t {
         unsigned den;
     } crop;
 
+    bool ch_viewpoint;
+    vlc_viewpoint_t viewpoint;
+
     /* */
     video_format_t source;
     filter_chain_t *filters;
@@ -435,7 +447,8 @@ static int VoutDisplayCreateRender(vout_display_t *vd)
     if (!convert)
         return 0;
 
-    msg_Dbg(vd, "A filter to adapt decoder to display is needed");
+    msg_Dbg(vd, "A filter to adapt decoder %4.4s to display %4.4s is needed",
+            (const char *)&v_src.i_chroma, (const char *)&v_dst.i_chroma);
 
     filter_owner_t owner = {
         .sys = vd,
@@ -453,28 +466,27 @@ static int VoutDisplayCreateRender(vout_display_t *vd)
     es_format_InitFromVideo(&src, &v_src);
 
     /* */
-    filter_t *filter;
+    int ret;
+
     for (int i = 0; i < 1 + (v_dst_cmp.i_chroma != v_dst.i_chroma); i++) {
         es_format_t dst;
 
         es_format_InitFromVideo(&dst, i == 0 ? &v_dst : &v_dst_cmp);
 
         filter_chain_Reset(osys->filters, &src, &dst);
-        filter = filter_chain_AppendFilter(osys->filters,
-                                           NULL, NULL, &src, &dst);
+        ret = filter_chain_AppendConverter(osys->filters, &src, &dst);
         es_format_Clean(&dst);
-        if (filter)
+        if (ret == 0)
             break;
     }
     es_format_Clean(&src);
 
-    if (filter == NULL) {
+    if (ret != 0) {
         msg_Err(vd, "Failed to adapt decoder format to display");
         filter_chain_Delete(osys->filters);
         osys->filters = NULL;
-        return -1;
     }
-    return 0;
+    return ret;
 }
 
 static void VoutDisplayDestroyRender(vout_display_t *vd)
@@ -641,10 +653,10 @@ static void VoutDisplayEvent(vout_display_t *vd, int event, va_list args)
     case VOUT_DISPLAY_EVENT_KEY: {
         const int key = (int)va_arg(args, int);
         msg_Dbg(vd, "VoutDisplayEvent 'key' 0x%2.2x", key);
-        if (vd->info.has_event_thread)
-            vout_SendEventKey(osys->vout, key);
-        else
+        if (vd->info.needs_event_thread)
             VoutDisplayEventKey(vd, key);
+        else
+            vout_SendEventKey(osys->vout, key);
         break;
     }
     case VOUT_DISPLAY_EVENT_MOUSE_STATE:
@@ -795,16 +807,18 @@ bool vout_ManageDisplay(vout_display_t *vd, bool allow_reset_pictures)
         osys->mouse.last_moved + osys->mouse.hide_timeout < date) {
         osys->mouse.is_hidden = hide_mouse = true;
     } else if (osys->mouse.ch_activity) {
+        if (osys->mouse.is_hidden)
+            vout_HideWindowMouse(osys->vout, false);
         osys->mouse.is_hidden = false;
     }
     osys->mouse.ch_activity = false;
     vlc_mutex_unlock(&osys->lock);
 
     if (hide_mouse) {
-        if (!vd->info.has_hide_mouse) {
-            msg_Dbg(vd, "auto hiding mouse cursor");
+        msg_Dbg(vd, "auto hiding mouse cursor");
+        if (vout_HideWindowMouse(osys->vout, true) != VLC_SUCCESS
+         && !vd->info.has_hide_mouse)
             vout_display_Control(vd, VOUT_DISPLAY_HIDE_MOUSE);
-        }
         vout_SendEventMouseHidden(osys->vout);
     }
 
@@ -847,7 +861,8 @@ bool vout_ManageDisplay(vout_display_t *vd, bool allow_reset_pictures)
             !ch_wm_state &&
 #endif
             !osys->ch_sar &&
-            !osys->ch_crop) {
+            !osys->ch_crop &&
+            !osys->ch_viewpoint) {
 
             if (!osys->cfg.is_fullscreen && osys->fit_window != 0) {
                 VoutDisplayFitWindow(vd, osys->fit_window == -1);
@@ -1031,6 +1046,18 @@ bool vout_ManageDisplay(vout_display_t *vd, bool allow_reset_pictures)
             osys->crop.den    = crop_den;
             osys->ch_crop = false;
         }
+        if (osys->ch_viewpoint) {
+            vout_display_cfg_t cfg = osys->cfg;
+
+            cfg.viewpoint = osys->viewpoint;
+
+            if (vout_display_Control(vd, VOUT_DISPLAY_CHANGE_VIEWPOINT, &cfg)) {
+                msg_Err(vd, "Failed to change Viewpoint");
+                osys->viewpoint = osys->cfg.viewpoint;
+            }
+            osys->cfg.viewpoint = osys->viewpoint;
+            osys->ch_viewpoint  = false;
+        }
 
         /* */
         if (reset_pictures) {
@@ -1190,6 +1217,21 @@ void vout_SetDisplayCrop(vout_display_t *vd,
     }
 }
 
+void vout_SetDisplayViewpoint(vout_display_t *vd,
+                              const vlc_viewpoint_t *p_viewpoint)
+{
+    vout_display_owner_sys_t *osys = vd->owner.sys;
+
+    if (osys->viewpoint.yaw   != p_viewpoint->yaw ||
+        osys->viewpoint.pitch != p_viewpoint->pitch ||
+        osys->viewpoint.roll  != p_viewpoint->roll ||
+        osys->viewpoint.fov   != p_viewpoint->fov) {
+        osys->viewpoint = *p_viewpoint;
+
+        osys->ch_viewpoint = true;
+    }
+}
+
 static vout_display_t *DisplayNew(vout_thread_t *vout,
                                   const video_format_t *source,
                                   const vout_display_state_t *state,
@@ -1283,6 +1325,9 @@ static vout_display_t *DisplayNew(vout_thread_t *vout,
     if (osys->sar.num != source->i_sar_num ||
         osys->sar.den != source->i_sar_den)
         osys->ch_sar = true;
+
+    vout_SendEventViewpointChangeable(osys->vout,
+        p_display->fmt.projection_mode != PROJECTION_MODE_RECTANGULAR);
 
     return p_display;
 error:

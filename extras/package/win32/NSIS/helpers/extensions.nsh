@@ -180,7 +180,6 @@ FunctionEnd
   !insertmacro ${_action} Video ".m4v"
   !insertmacro ${_action} Video ".mkv"
   !insertmacro ${_action} Video ".mov"
-  !insertmacro ${_action} Video ".mp2"
   !insertmacro ${_action} Video ".mp2v"
   !insertmacro ${_action} Video ".mp4"
   !insertmacro ${_action} Video ".mp4v"
@@ -207,6 +206,7 @@ FunctionEnd
   !insertmacro ${_action} Video ".rpl"
   !insertmacro ${_action} Video ".thp"
   !insertmacro ${_action} Video ".tod"
+  !insertmacro ${_action} Video ".tp"
   !insertmacro ${_action} Video ".ts"
   !insertmacro ${_action} Video ".tts"
   !insertmacro ${_action} Video ".vob"
@@ -246,9 +246,11 @@ FunctionEnd
 ; Generic function for adding the context menu for one ext.
 !macro AddContextMenuExt EXT
   WriteRegStr HKCR ${EXT}\shell\PlayWithVLC "" $ContextMenuEntry_PlayWith
+  WriteRegStr HKCR ${EXT}\shell\PlayWithVLC "MultiSelectModel" "Player"
   WriteRegStr HKCR ${EXT}\shell\PlayWithVLC\command "" '"$INSTDIR\vlc.exe" --started-from-file --no-playlist-enqueue "%1"'
 
   WriteRegStr HKCR ${EXT}\shell\AddToPlaylistVLC "" $ContextMenuEntry_AddToPlaylist
+  WriteRegStr HKCR ${EXT}\shell\AddToPlaylistVLC "MultiSelectModel" "Player"
   WriteRegStr HKCR ${EXT}\shell\AddToPlaylistVLC\command "" '"$INSTDIR\vlc.exe" --started-from-file --playlist-enqueue "%1"'
 !macroend
 

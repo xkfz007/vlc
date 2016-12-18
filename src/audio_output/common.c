@@ -87,12 +87,15 @@ unsigned int aout_BitsPerSample( vlc_fourcc_t i_format )
  *****************************************************************************/
 void aout_FormatPrepare( audio_sample_format_t * p_format )
 {
-    p_format->i_channels = aout_FormatNbChannels( p_format );
+
+    unsigned i_channels = aout_FormatNbChannels( p_format );
+    if( i_channels > 0 )
+        p_format->i_channels = i_channels;
     p_format->i_bitspersample = aout_BitsPerSample( p_format->i_format );
     if( p_format->i_bitspersample > 0 )
     {
         p_format->i_bytes_per_frame = ( p_format->i_bitspersample / 8 )
-                                    * aout_FormatNbChannels( p_format );
+                                    * p_format->i_channels;
         p_format->i_frame_length = 1;
     }
 }
@@ -207,9 +210,13 @@ const char * aout_FormatPrintChannels( const audio_sample_format_t * p_format )
           | AOUT_CHAN_REARCENTER | AOUT_CHAN_MIDDLELEFT
           | AOUT_CHAN_MIDDLERIGHT | AOUT_CHAN_LFE:
         return "3F2M1R/LFE";
+    case AOUT_CHAN_LEFT | AOUT_CHAN_RIGHT | AOUT_CHAN_CENTER
+          | AOUT_CHAN_REARLEFT | AOUT_CHAN_REARRIGHT | AOUT_CHAN_REARCENTER
+          | AOUT_CHAN_MIDDLELEFT | AOUT_CHAN_MIDDLERIGHT | AOUT_CHAN_LFE:
+        return "3F2M3R/LFE";
     }
 
-    return "ERROR";
+    return AOUT_FMT_LINEAR( p_format ) ? "ERROR" : "Unknown-chan-mask";
 }
 
 #undef aout_FormatPrint
@@ -248,6 +255,8 @@ unsigned aout_CheckChannelReorder( const uint32_t *chans_in,
                                    const uint32_t *chans_out,
                                    uint32_t mask, uint8_t *restrict table )
 {
+    static_assert(AOUT_CHAN_MAX <= (sizeof (mask) * CHAR_BIT), "Missing bits");
+
     unsigned channels = 0;
 
     if( chans_in == NULL )
@@ -454,6 +463,9 @@ bool aout_CheckChannelExtraction( int *pi_selection,
                                   const uint32_t pi_order_dst[AOUT_CHAN_MAX],
                                   const uint32_t *pi_order_src, int i_channels )
 {
+    static_assert(AOUT_CHAN_MAX <= (sizeof (*pi_order_dst) * CHAR_BIT),
+                  "Missing bits");
+
     const uint32_t pi_order_dual_mono[] = { AOUT_CHAN_LEFT, AOUT_CHAN_RIGHT };
     uint32_t i_layout = 0;
     int i_out = 0;
@@ -511,7 +523,7 @@ bool aout_CheckChannelExtraction( int *pi_selection,
         if( pi_selection[i] != i )
             return true;
     }
-    return i_out == i_channels;
+    return i_out != i_channels;
 }
 
 /* Return the order in which filters should be inserted */
@@ -548,8 +560,8 @@ bool aout_ChangeFilterString( vlc_object_t *p_obj, vlc_object_t *p_aout,
     }
     else
     {
-        psz_list = var_CreateGetString( p_obj->p_libvlc, psz_variable );
-        var_Destroy( p_obj->p_libvlc, psz_variable );
+        psz_list = var_CreateGetString( p_obj->obj.libvlc, psz_variable );
+        var_Destroy( p_obj->obj.libvlc, psz_variable );
     }
 
     /* Split the string into an array of filters */
@@ -614,6 +626,14 @@ bool aout_ChangeFilterString( vlc_object_t *p_obj, vlc_object_t *p_aout,
         i_length += 1 + strlen( ppsz_filter[i] );
 
     char *psz_new = malloc( i_length + 1 );
+
+    if( unlikely( !psz_new ) )
+    {
+        free( ppsz_filter );
+        free( psz_list );
+        return false;
+    }
+
     *psz_new = '\0';
     for( int i = 0; i < i_count; i++ )
     {

@@ -33,6 +33,7 @@
 #include <vlc_plugin.h>
 #include <vlc_fs.h>
 #include <vlc_filter.h>
+#include <vlc_subpicture.h>
 
 #include <sys/types.h>
 #include <unistd.h>
@@ -134,8 +135,7 @@ static int Create( vlc_object_t *p_this )
     p_sys->i_width = p_filter->fmt_out.video.i_width;
     p_sys->i_height = p_filter->fmt_out.video.i_height;
 
-    p_filter->pf_render_text = RenderText;
-    p_filter->pf_render_html = NULL;
+    p_filter->pf_render = RenderText;
     p_filter->p_sys = p_sys;
 
     /* MUST call this before any RSVG funcs */
@@ -265,19 +265,30 @@ static int Render( filter_t *p_filter, subpicture_region_t *p_region,
     i_width = gdk_pixbuf_get_width( p_svg->p_rendition );
     i_height = gdk_pixbuf_get_height( p_svg->p_rendition );
 
+    if( gdk_pixbuf_get_colorspace( p_svg->p_rendition ) != GDK_COLORSPACE_RGB ||
+        gdk_pixbuf_get_has_alpha( p_svg->p_rendition ) != TRUE ||
+        gdk_pixbuf_get_bits_per_sample( p_svg->p_rendition ) != 8 )
+    {
+        g_object_unref( p_svg->p_rendition );
+        p_svg->p_rendition = NULL;
+        msg_Err( p_filter, "Unsupported colorspace" );
+        return VLC_EGENERIC;
+    }
+
     /* Create a new subpicture region */
-    memset( &fmt, 0, sizeof( video_format_t ) );
-    fmt.i_chroma = VLC_CODEC_YUVA;
+    video_format_Init( &fmt, VLC_CODEC_YUVA );
     fmt.i_width = fmt.i_visible_width = i_width;
     fmt.i_height = fmt.i_visible_height = i_height;
-    fmt.i_x_offset = fmt.i_y_offset = 0;
-    fmt.i_sar_num = 1;
-    fmt.i_sar_den = 1;
 
     p_region->p_picture = picture_NewFromFormat( &fmt );
     if( !p_region->p_picture )
+    {
+        video_format_Clean( &fmt );
         return VLC_EGENERIC;
-    p_region->fmt = fmt;
+    }
+    video_format_Clean( &p_region->fmt );
+    video_format_Init( &p_region->fmt, 0 );
+    video_format_Copy( &p_region->fmt, &fmt );
 
     p_region->i_x = p_region->i_y = 0;
     p_y = p_region->p_picture->Y_PIXELS;
@@ -435,7 +446,10 @@ static int RenderText( filter_t *p_filter, subpicture_region_t *p_region_out,
 
     /* Sanity check */
     if( !p_region_in || !p_region_out ) return VLC_EGENERIC;
-    psz_string = p_region_in->psz_text;
+    if( !p_region_in->p_text ) return VLC_EGENERIC;
+    //FIXME: What should we do when there's more than a single segment?
+    //Is this refused at codec level?
+    psz_string = p_region_in->p_text->psz_text;
     if( !psz_string || !*psz_string ) return VLC_EGENERIC;
 
     p_svg = malloc( sizeof( svg_rendition_t ) );
@@ -472,8 +486,8 @@ static int RenderText( filter_t *p_filter, subpicture_region_t *p_region_out,
         }
         snprintf( p_svg->psz_text, length, psz_template, psz_string );
     }
-    p_svg->i_width = p_sys->i_width;
-    p_svg->i_height = p_sys->i_height;
+    p_svg->i_width = p_sys->i_width = p_filter->fmt_out.video.i_width;
+    p_svg->i_height = p_sys->i_height = p_filter->fmt_out.video.i_height;
     p_svg->i_chroma = VLC_CODEC_YUVA;
 
     /* Render the SVG.

@@ -2,17 +2,29 @@ CLEANFILES = skins2/default.vlt
 MOSTLYCLEANFILES =
 EXTRA_DIST =
 
-appdatadir = $(datadir)/applications
+desktopdir = $(datadir)/applications
 if !HAVE_WIN32
-appdata_DATA = vlc.desktop
+if !HAVE_DARWIN
+desktop_DATA = vlc.desktop
+appdatadir = $(datarootdir)/appdata
+appdata_DATA = $(appdata_in_files:.xml.in=.xml)
+appdata_in_files = vlc.appdata.xml.in
 endif
-EXTRA_DIST += vlc.desktop.in
-CLEANFILES += $(appdata_DATA)
+endif
+
+EXTRA_DIST += vlc.desktop.in vlc.desktop.mimetypes
+CLEANFILES += $(desktop_DATA) $(appdata_DATA)
 
 vlc.desktop: vlc.desktop.in $(top_builddir)/config.status
-	$(AM_V_GEN)sed -e 's,\@bindir\@,$(bindir),g' < "$<" > tmp-$@
+	$(AM_V_GEN)mimetypes="$$(sed 's/\s*#.*$$//g' $(srcdir)/vlc.desktop.mimetypes | egrep -v '^$$' | tr "\n" ';')"; \
+	sed \
+		-e 's,\@bindir\@,$(bindir),g' \
+		 -e "s,\@MIMETYPES\@,$$mimetypes,g" < "$<" > tmp-$@
 	$(AM_V_at)$(DESKTOP_FILE_VALIDATE) tmp-$@
 	$(AM_V_at)mv -f tmp-$@ $@
+
+vlc.appdata.xml: vlc.appdata.xml.in
+	$(AM_V_GEN)$(MSGFMT) --xml --template $< -d $(top_srcdir)/po -o $@ || cp $< $@
 
 iconsdatadir = $(datadir)/icons/hicolor
 icons16dir = $(iconsdatadir)/16x16/apps
@@ -76,11 +88,13 @@ skins2_default_vlt_FILES = \
 	skins2/default/subX/vol_slider.png
 
 skins2/default.vlt: $(skins2_default_vlt_FILES)
-	mkdir -p skins2
-	(cd "$(srcdir)/skins2"; find default -print0 | \
-		LC_ALL=C sort -z | \
-		tar cvv --exclude .svn --no-recursion --null -T -) | \
-	gzip -n > skins2/default.vlt
+	$(AM_V_at)mkdir -p skins2
+	$(AM_V_at)rm -f -- skins2/default.vlt.tmp
+	$(AM_V_GEN)GZIP=--no-name \
+	tar cvvzf skins2/default.vlt.tmp \
+		--owner=root --group=root --directory="$(srcdir)/skins2" \
+		default/
+	$(AM_V_at)mv -f -- skins2/default.vlt.tmp skins2/default.vlt
 
 #
 # LUA
@@ -124,35 +138,21 @@ nobase_vlclib_DATA = \
 	lua/playlist/anevia_xml.luac \
 	lua/playlist/appletrailers.luac \
 	lua/playlist/bbc_co_uk.luac \
-	lua/playlist/break.luac \
-	lua/playlist/canalplus.luac \
 	lua/playlist/cue.luac \
 	lua/playlist/dailymotion.luac \
-	lua/playlist/extreme.luac \
-	lua/playlist/france2.luac \
-	lua/playlist/googlevideo.luac \
 	lua/playlist/jamendo.luac \
-	lua/playlist/joox.luac \
-	lua/playlist/katsomo.luac \
 	lua/playlist/koreus.luac \
-	lua/playlist/lelombrik.luac \
 	lua/playlist/liveleak.luac \
-	lua/playlist/metacafe.luac \
-	lua/playlist/metachannels.luac \
-	lua/playlist/mpora.luac \
-	lua/playlist/pinkbike.luac \
-	lua/playlist/pluzz.luac \
+	lua/playlist/newgrounds.luac \
 	lua/playlist/rockbox_fm_presets.luac \
 	lua/playlist/soundcloud.luac \
 	lua/playlist/vimeo.luac \
+	lua/playlist/vocaroo.luac \
 	lua/playlist/youtube.luac \
-	lua/playlist/youtube_homepage.luac \
-	lua/playlist/zapiks.luac \
 	lua/sd/fmc.luac \
 	lua/sd/icecast.luac \
 	lua/sd/icast.luac \
 	lua/sd/jamendo.luac \
-	lua/sd/metachannels.luac \
 	$(NULL)
 
 nobase_doc_DATA = \
@@ -168,7 +168,7 @@ nobase_doc_DATA = \
 	lua/meta/reader/README.txt \
 	lua/meta/reader/filename.lua \
 	lua/playlist/README.txt \
-	lua/playlist/soundcloud.lua \
+	lua/playlist/liveleak.lua \
 	lua/playlist/youtube.lua \
 	lua/sd/README.txt \
 	lua/sd/icecast.lua \
@@ -224,30 +224,27 @@ EXTRA_DIST += \
 	lua/playlist/dailymotion.lua \
 	lua/playlist/extreme.lua \
 	lua/playlist/france2.lua \
-	lua/playlist/googlevideo.lua \
 	lua/playlist/jamendo.lua \
-	lua/playlist/joox.lua \
 	lua/playlist/katsomo.lua \
 	lua/playlist/koreus.lua \
 	lua/playlist/lelombrik.lua \
 	lua/playlist/liveleak.lua \
 	lua/playlist/metacafe.lua \
-	lua/playlist/metachannels.lua \
 	lua/playlist/mpora.lua \
+	lua/playlist/newgrounds.lua \
 	lua/playlist/pinkbike.lua \
 	lua/playlist/pluzz.lua \
 	lua/playlist/rockbox_fm_presets.lua \
 	lua/playlist/soundcloud.lua \
 	lua/playlist/vimeo.lua \
+	lua/playlist/vocaroo.lua \
 	lua/playlist/youtube.lua \
-	lua/playlist/youtube_homepage.lua \
 	lua/playlist/zapiks.lua \
 	lua/sd/README.txt \
 	lua/sd/fmc.lua \
 	lua/sd/icecast.lua \
 	lua/sd/icast.lua \
-	lua/sd/jamendo.lua \
-	lua/sd/metachannels.lua
+	lua/sd/jamendo.lua
 
 DIST_http_lua = \
 	lua/http/view.html \

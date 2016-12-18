@@ -17,18 +17,10 @@
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
-
 #ifndef H264_NAL_H
 # define H264_NAL_H
 
-# ifdef HAVE_CONFIG_H
-#  include "config.h"
-# endif
-
 # include <vlc_common.h>
-# include <vlc_codec.h>
-
-# include "../demux/mpeg/mpeg_parser_helpers.h"
 
 #define PROFILE_H264_BASELINE             66
 #define PROFILE_H264_MAIN                 77
@@ -45,39 +37,72 @@
 #define PROFILE_H264_MVC_STEREO_HIGH      128
 #define PROFILE_H264_MVC_MULTIVIEW_HIGH   118
 
-#define SPS_MAX (32)
-#define PPS_MAX (256)
+#define PROFILE_H264_MFC_HIGH                          134
+#define PROFILE_H264_MVC_MULTIVIEW_DEPTH_HIGH          138
+#define PROFILE_H264_MVC_ENHANCED_MULTIVIEW_DEPTH_HIGH 139
 
-enum nal_unit_type_e
+#define H264_SPS_ID_MAX (31)
+#define H264_PPS_ID_MAX (255)
+
+enum h264_nal_unit_type_e
 {
-    NAL_UNKNOWN = 0,
-    NAL_SLICE   = 1,
-    NAL_SLICE_DPA   = 2,
-    NAL_SLICE_DPB   = 3,
-    NAL_SLICE_DPC   = 4,
-    NAL_SLICE_IDR   = 5,    /* ref_idc != 0 */
-    NAL_SEI         = 6,    /* ref_idc == 0 */
-    NAL_SPS         = 7,
-    NAL_PPS         = 8,
-    NAL_AU_DELIMITER= 9
+    H264_NAL_UNKNOWN = 0,
+    H264_NAL_SLICE   = 1,
+    H264_NAL_SLICE_DPA   = 2,
+    H264_NAL_SLICE_DPB   = 3,
+    H264_NAL_SLICE_DPC   = 4,
+    H264_NAL_SLICE_IDR   = 5,    /* ref_idc != 0 */
+    H264_NAL_SEI         = 6,    /* ref_idc == 0 */
+    H264_NAL_SPS         = 7,
+    H264_NAL_PPS         = 8,
+    H264_NAL_AU_DELIMITER= 9,
     /* ref_idc == 0 for 6,9,10,11,12 */
+    H264_NAL_END_OF_SEQ  = 10,
+    H264_NAL_END_OF_STREAM = 11,
+    H264_NAL_FILLER_DATA = 12,
+    H264_NAL_SPS_EXT     = 13,
+    H264_NAL_PREFIX      = 14,
+    H264_NAL_SUBSET_SPS  = 15,
+    H264_NAL_DEPTH_PS    = 16,
+    H264_NAL_RESERVED_17 = 17,
+    H264_NAL_RESERVED_18 = 18,
+    H264_NAL_SLICE_WP    = 19,
+    H264_NAL_SLICE_EXT   = 20,
+    H264_NAL_SLICE_3D_EXT= 21,
+    H264_NAL_RESERVED_22 = 22,
+    H264_NAL_RESERVED_23 = 23,
 };
 
-/* Defined in H.264 annex D */
-enum sei_type_e
-{
-    SEI_PIC_TIMING = 1,
-    SEI_USER_DATA_REGISTERED = 4,
-    SEI_RECOVERY_POINT = 6
-};
+typedef struct h264_sequence_parameter_set_t h264_sequence_parameter_set_t;
+typedef struct h264_picture_parameter_set_t h264_picture_parameter_set_t;
 
-struct nal_sps
+h264_sequence_parameter_set_t * h264_decode_sps( const uint8_t *, size_t, bool );
+h264_picture_parameter_set_t *  h264_decode_pps( const uint8_t *, size_t, bool );
+
+void h264_release_sps( h264_sequence_parameter_set_t * );
+void h264_release_pps( h264_picture_parameter_set_t * );
+
+struct h264_sequence_parameter_set_t
 {
-    int i_id;
-    int i_profile, i_level;
-    int i_width, i_height;
+    uint8_t i_id;
+    uint8_t i_profile, i_level;
+    uint8_t i_constraint_set_flags;
+    /* according to avcC, 3 bits max for those */
+    uint8_t i_chroma_idc;
+    uint8_t i_bit_depth_luma;
+    uint8_t i_bit_depth_chroma;
+
+    uint32_t pic_width_in_mbs_minus1;
+    uint32_t pic_height_in_map_units_minus1;
+    struct
+    {
+        uint32_t left_offset;
+        uint32_t right_offset;
+        uint32_t top_offset;
+        uint32_t bottom_offset;
+    } frame_crop;
+    uint8_t frame_mbs_only_flag;
     int i_log2_max_frame_num;
-    int b_frame_mbs_only;
     int i_pic_order_cnt_type;
     int i_delta_pic_order_always_zero_flag;
     int i_log2_max_pic_order_cnt_lsb;
@@ -85,69 +110,76 @@ struct nal_sps
     struct {
         bool b_valid;
         int i_sar_num, i_sar_den;
+        struct {
+            bool b_full_range;
+            uint8_t i_colour_primaries;
+            uint8_t i_transfer_characteristics;
+            uint8_t i_matrix_coefficients;
+        } colour;
         bool b_timing_info_present_flag;
         uint32_t i_num_units_in_tick;
         uint32_t i_time_scale;
         bool b_fixed_frame_rate;
         bool b_pic_struct_present_flag;
-        bool b_cpb_dpb_delays_present_flag;
+        bool b_hrd_parameters_present_flag;
         uint8_t i_cpb_removal_delay_length_minus1;
         uint8_t i_dpb_output_delay_length_minus1;
     } vui;
 };
 
-struct nal_pps
+struct h264_picture_parameter_set_t
 {
-    int i_id;
-    int i_sps_id;
+    uint8_t i_id;
+    uint8_t i_sps_id;
     int i_pic_order_present_flag;
 };
 
-static inline void CreateDecodedNAL( uint8_t **pp_ret, int *pi_ret,
-                                     const uint8_t *src, int i_src )
-{
-    uint8_t *dst = malloc( i_src );
+/*
+    AnnexB : [\x00] \x00 \x00 \x01 Prefixed NAL
+    AVC Sample format : NalLengthSize encoded size prefixed NAL
+    avcC: AVCDecoderConfigurationRecord combining SPS & PPS in AVC Sample Format
+*/
 
-    *pp_ret = dst;
+#define H264_MIN_AVCC_SIZE 7
 
-    if( dst )
-        *pi_ret = nal_decode(src, dst, i_src);
-}
+bool h264_isavcC( const uint8_t *, size_t );
 
-/* Parse the SPS/PPS Metadata and convert it to annex b format */
-int convert_sps_pps( decoder_t *p_dec, const uint8_t *p_buf,
-                     uint32_t i_buf_size, uint8_t *p_out_buf,
-                     uint32_t i_out_buf_size, uint32_t *p_sps_pps_size,
-                     uint32_t *p_nal_size);
+/* Convert AVC Sample format to Annex B in-place */
+void h264_AVC_to_AnnexB( uint8_t *p_buf, uint32_t i_len,
+                         uint8_t i_nal_length_size );
 
-/* Convert H.264 NAL format to annex b in-place */
-struct H264ConvertState {
-    uint32_t nal_len;
-    uint32_t nal_pos;
-};
+/* Get the First SPS/PPS NAL pointers from an Annex B buffer
+ * Returns TRUE if a SPS and/or a PPS is found */
+bool h264_AnnexB_get_spspps( const uint8_t *p_buf, size_t i_buf,
+                             const uint8_t **pp_sps, size_t *p_sps_size,
+                             const uint8_t **pp_pps, size_t *p_pps_size,
+                             const uint8_t **pp_ext, size_t *p_ext_size );
 
-void convert_h264_to_annexb( uint8_t *p_buf, uint32_t i_len,
-                             size_t i_nal_size,
-                             struct H264ConvertState *state );
+/* Create a AVCDecoderConfigurationRecord from SPS/PPS
+ * Returns a valid block_t on success, must be freed with block_Release */
+block_t *h264_AnnexB_NAL_to_avcC( uint8_t i_nal_length_size,
+                                  const uint8_t *p_sps_buf,
+                                  size_t i_sps_size,
+                                  const uint8_t *p_pps_buf,
+                                  size_t i_pps_size );
+/* Same from raw / non prefixed NAL */
+block_t *h264_NAL_to_avcC( uint8_t i_nal_length_size,
+                           const uint8_t *p_sps_buf,
+                           size_t i_sps_size,
+                           const uint8_t *p_pps_buf,
+                           size_t i_pps_size );
 
-/* Get the SPS/PPS pointers from an Annex B buffer
- * Returns 0 if a SPS and/or a PPS is found */
-int h264_get_spspps( uint8_t *p_buf, size_t i_buf,
-                     uint8_t **pp_sps, size_t *p_sps_size,
-                     uint8_t **pp_pps, size_t *p_pps_size );
+/* Convert AVCDecoderConfigurationRecord SPS/PPS to Annex B format */
+uint8_t * h264_avcC_to_AnnexB_NAL( const uint8_t *p_buf, size_t i_buf,
+                                   size_t *pi_result, uint8_t *pi_nal_length_size );
 
-/* Parse a SPS into the struct nal_sps
- * Returns 0 in case of success */
-int h264_parse_sps( const uint8_t *p_sps_buf, int i_sps_size,
-                    struct nal_sps *p_sps );
+bool h264_get_picture_size( const h264_sequence_parameter_set_t *, unsigned *p_w, unsigned *p_h,
+                            unsigned *p_vw, unsigned *p_vh );
+bool h264_get_chroma_luma( const h264_sequence_parameter_set_t *, uint8_t *pi_chroma_format,
+                           uint8_t *pi_depth_luma, uint8_t *pi_depth_chroma );
 
-/* Parse a PPS into the struct nal_pps
- * Returns 0 in case of success */
-int h264_parse_pps( const uint8_t *p_pps_buf, int i_pps_size,
-                    struct nal_pps *p_pps );
-
-/* Get level and Profile */
-bool h264_get_profile_level(const es_format_t *p_fmt, size_t *p_profile,
-                            size_t *p_level, size_t *p_nal_size);
+/* Get level and Profile from DecoderConfigurationRecord */
+bool h264_get_profile_level(const es_format_t *p_fmt, uint8_t *pi_profile,
+                            uint8_t *pi_level, uint8_t *p_nal_length_size);
 
 #endif /* H264_NAL_H */

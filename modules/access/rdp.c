@@ -1,7 +1,7 @@
 /*****************************************************************************
  * rdp.c: libfreeRDP based Remote Desktop access
  *****************************************************************************
- * Copyright (C) 2013 VideoLAN Authors
+ * Copyright (C) 2013 VideoLAN and VLC Authors
  *****************************************************************************
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -46,7 +46,7 @@
 #endif
 
 #if !defined(FREERDP_VERSION_MAJOR) || \
-    (defined(FREERDP_VERSION_MAJOR) && !(FREERDP_VERSION_MAJOR >= 1 && FREERDP_VERSION_MINOR >= 1 ))
+    (defined(FREERDP_VERSION_MAJOR) && !(FREERDP_VERSION_MAJOR > 1 || (FREERDP_VERSION_MAJOR == 1 && FREERDP_VERSION_MINOR >= 1)))
 # define SoftwareGdi sw_gdi
 # define Fullscreen fullscreen
 # define ServerHostname hostname
@@ -237,7 +237,7 @@ static bool postConnectHandler( freerdp *p_instance )
     vlcrdp_context_t * p_vlccontext = (vlcrdp_context_t *) p_instance->context;
 
     msg_Dbg( p_vlccontext->p_demux, "connected to desktop %dx%d (%d bpp)",
-#if defined(FREERDP_VERSION_MAJOR)  && (FREERDP_VERSION_MAJOR >= 1 && FREERDP_VERSION_MINOR >= 1 )
+#if defined(FREERDP_VERSION_MAJOR) && (FREERDP_VERSION_MAJOR > 1 || (FREERDP_VERSION_MAJOR == 1 && FREERDP_VERSION_MINOR >= 1))
              p_instance->settings->DesktopWidth,
              p_instance->settings->DesktopHeight,
              p_instance->settings->ColorDepth
@@ -439,7 +439,7 @@ static int Open( vlc_object_t *p_this )
     p_sys->p_instance = freerdp_new();
     if ( !p_sys->p_instance )
     {
-        msg_Err( p_demux, "rdp instanciation error" );
+        msg_Err( p_demux, "rdp instantiation error" );
         free( p_sys );
         return VLC_EGENERIC;
     }
@@ -458,7 +458,7 @@ static int Open( vlc_object_t *p_this )
 
     /* Parse uri params for pre-connect */
     vlc_url_t url;
-    vlc_UrlParse( &url, p_demux->psz_location, 0 );
+    vlc_UrlParse( &url, p_demux->psz_location );
 
     if ( !EMPTY_STR(url.psz_host) )
         p_sys->psz_hostname = strdup( url.psz_host );

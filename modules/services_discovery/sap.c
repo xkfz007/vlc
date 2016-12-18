@@ -103,7 +103,7 @@
     static int  OpenDemux ( vlc_object_t * );
     static void CloseDemux ( vlc_object_t * );
 
-VLC_SD_PROBE_HELPER("sap", "Network streams (SAP)", SD_CAT_LAN)
+VLC_SD_PROBE_HELPER("sap", N_("Network streams (SAP)"), SD_CAT_LAN)
 
 vlc_module_begin ()
     set_shortname( N_("SAP"))
@@ -301,6 +301,7 @@ static int Open( vlc_object_t *p_this )
     p_sys->i_timeout = var_CreateGetInteger( p_sd, "sap-timeout" );
 
     p_sd->p_sys  = p_sys;
+    p_sd->description = _("Network streams (SAP)");
 
     p_sys->pi_fd = NULL;
     p_sys->i_fd = 0;
@@ -341,7 +342,7 @@ static int OpenDemux( vlc_object_t *p_this )
     assert( p_demux->s ); /* this is NOT an access_demux */
 
     /* Probe for SDP */
-    if( stream_Peek( p_demux->s, &p_peek, 7 ) < 7 )
+    if( vlc_stream_Peek( p_demux->s, &p_peek, 7 ) < 7 )
         return VLC_EGENERIC;
 
     if( memcmp( p_peek, "v=0\r\no=", 7 ) && memcmp( p_peek, "v=0\no=", 6 ) )
@@ -360,7 +361,7 @@ static int OpenDemux( vlc_object_t *p_this )
         }
         psz_sdp = psz_sdp_new;
 
-        i_read = stream_Read( p_demux->s, &psz_sdp[i_len], i_read_max );
+        i_read = vlc_stream_Read( p_demux->s, &psz_sdp[i_len], i_read_max );
         if( (int)i_read < 0 )
         {
             msg_Err( p_demux, "cannot read SDP" );
@@ -402,8 +403,8 @@ static int OpenDemux( vlc_object_t *p_this )
 
 error:
     FREENULL( psz_sdp );
-    if( p_sdp ) FreeSDP( p_sdp ); p_sdp = NULL;
-    stream_Seek( p_demux->s, 0 );
+    if( p_sdp ) FreeSDP( p_sdp );
+    vlc_stream_Seek( p_demux->s, 0 );
     return errval;
 }
 
@@ -613,10 +614,9 @@ static void *Run( void *data )
 static int Demux( demux_t *p_demux )
 {
     sdp_t *p_sdp = p_demux->p_sys->p_sdp;
-    input_thread_t *p_input;
+    input_thread_t *p_input = p_demux->p_input;
     input_item_t *p_parent_input;
 
-    p_input = demux_GetParentInput( p_demux );
     assert( p_input );
     if( !p_input )
     {
@@ -646,7 +646,6 @@ static int Demux( demux_t *p_demux )
     p_parent_input->b_net = true;
 
     vlc_mutex_unlock( &p_parent_input->lock );
-    vlc_object_release( p_input );
     return VLC_SUCCESS;
 }
 
@@ -728,7 +727,7 @@ static int ParseSAP( services_discovery_t *p_sd, const uint8_t *buf,
             return VLC_EGENERIC;
         }
 
-        decomp = realloc (decomp, newsize + 1);
+        decomp = xrealloc (decomp, newsize + 1);
         decomp[newsize] = '\0';
         psz_sdp = (const char *)decomp;
         len = newsize;
@@ -854,9 +853,8 @@ sap_announce_t *CreateAnnounce( services_discovery_t *p_sd, uint32_t *i_source, 
     p_sap->p_sdp = p_sdp;
 
     /* Released in RemoveAnnounce */
-    p_input = input_item_NewWithType( p_sap->p_sdp->psz_uri,
-                                      p_sdp->psz_sessionname,
-                                      0, NULL, 0, -1, ITEM_TYPE_STREAM );
+    p_input = input_item_NewStream( p_sap->p_sdp->psz_uri, p_sdp->psz_sessionname,
+                                    -1 );
     if( unlikely(p_input == NULL) )
     {
         free( p_sap );
@@ -1498,7 +1496,7 @@ static int Decompress( const unsigned char *psz_src, unsigned char **_dst, int i
     do
     {
         n++;
-        psz_dst = (unsigned char *)realloc( psz_dst, n * 1000 );
+        psz_dst = xrealloc( psz_dst, n * 1000 );
         d_stream.next_out = (Bytef *)&psz_dst[(n - 1) * 1000];
         d_stream.avail_out = 1000;
 
@@ -1516,7 +1514,7 @@ static int Decompress( const unsigned char *psz_src, unsigned char **_dst, int i
     i_dstsize = d_stream.total_out;
     inflateEnd( &d_stream );
 
-    *_dst = (unsigned char *)realloc( psz_dst, i_dstsize );
+    *_dst = xrealloc( psz_dst, i_dstsize );
 
     return i_dstsize;
 #else

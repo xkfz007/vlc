@@ -74,7 +74,7 @@ static int Demux( demux_t *p_demux )
 
     input_item_t *p_current_input = GetCurrentItem(p_demux);
 
-    free( stream_ReadLine( p_demux->s ) );
+    free( vlc_stream_ReadLine( p_demux->s ) );
 
     p_xml_reader = xml_ReaderCreate( p_demux, p_demux->s );
     if( !p_xml_reader )
@@ -192,7 +192,7 @@ static int Demux( demux_t *p_demux )
                 // Read the element name
                 if( !strcmp( node, "entry" ) )
                 {
-                    resolve_xml_special_chars( psz_mrl );
+                    vlc_xml_decode( psz_mrl );
                     p_input = input_item_New( psz_mrl, psz_title );
                     if( psz_now )
                         input_item_SetNowPlaying( p_input, psz_now );

@@ -26,25 +26,22 @@
 #ifndef VLC_VOUT_H_
 #define VLC_VOUT_H_ 1
 
-/**
- * \file
- * This file defines common video output structures and functions in vlc
- */
-
+#include <vlc_es.h>
 #include <vlc_picture.h>
-#include <vlc_filter.h>
 #include <vlc_subpicture.h>
 
-/*****************************************************************************
- * Prototypes
- *****************************************************************************/
-
 /**
- * \defgroup video_output Video Output
+ * \defgroup output Output
+ * \defgroup video_output Video output
+ * \ingroup output
+ * Video rendering, output and window management
+ *
  * This module describes the programming interface for video output threads.
  * It includes functions allowing to open a new thread, send pictures to a
  * thread, and destroy a previously opened video output thread.
  * @{
+ * \file
+ * Video output thread interface
  */
 
 /**
@@ -84,6 +81,22 @@ struct vout_thread_t {
 #define VOUT_ALIGN_TOP          0x0004
 #define VOUT_ALIGN_BOTTOM       0x0008
 #define VOUT_ALIGN_VMASK        0x000C
+
+/**
+ * Viewpoints
+ */
+struct vlc_viewpoint_t {
+    float yaw;   /* yaw in degrees */
+    float pitch; /* pitch in degrees */
+    float roll;  /* roll in degrees */
+    float fov;   /* field of view in degrees */
+};
+
+static inline void vlc_viewpoint_init( vlc_viewpoint_t *p_vp )
+{
+    p_vp->yaw = p_vp->pitch = p_vp->roll = 0.0f;
+    p_vp->fov = FIELD_OF_VIEW_DEGREES_DEFAULT;
+}
 
 /*****************************************************************************
  * Prototypes

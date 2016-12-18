@@ -76,8 +76,8 @@ static scte27_color_t bs_read_color(bs_t *bs)
     /* XXX it's unclear if a value of 0 in Y/U/V means a transparent pixel */
     color.y     = bs_read(bs, 5) << 3;
     color.alpha = bs_read1(bs) ? 0xff : 0x80;
-    color.u     = bs_read(bs, 5) << 3;
     color.v     = bs_read(bs, 5) << 3;
+    color.u     = bs_read(bs, 5) << 3;
 
     return color;
 }
@@ -416,7 +416,7 @@ static subpicture_t *Decode(decoder_t *dec, block_t **block)
     subpicture_t *sub_first = NULL;
     subpicture_t **sub_last = &sub_first;
 
-    if (b->i_flags & (BLOCK_FLAG_DISCONTINUITY|BLOCK_FLAG_CORRUPTED))
+    if (b->i_flags & (BLOCK_FLAG_CORRUPTED))
         goto exit;
 
     while (b->i_buffer > 3) {

@@ -96,7 +96,7 @@ struct spu_private_t {
 };
 
 /*****************************************************************************
- * heap managment
+ * heap management
  *****************************************************************************/
 static void SpuHeapInit(spu_heap_t *heap)
 {
@@ -236,7 +236,7 @@ static filter_t *SpuRenderCreateAndLoadScale(vlc_object_t *object,
 
     scale->owner.video.buffer_new = spu_new_video_buffer;
 
-    scale->p_module = module_need(scale, "video filter2", NULL, false);
+    scale->p_module = module_need(scale, "video converter", NULL, false);
 
     return scale;
 }
@@ -257,7 +257,7 @@ static void SpuRenderText(spu_t *spu, bool *rerender_text,
      * time-dependent text (and effects). The first indicates
      * the total amount of time the text will be on screen,
      * the second the amount of time it has already been on
-     * screen (can be a negative value as text is layed out
+     * screen (can be a negative value as text is laid out
      * before it is rendered) and the third is a feedback
      * variable from the renderer - if the renderer sets it
      * then this particular text is time-dependent, eg. the
@@ -275,10 +275,8 @@ static void SpuRenderText(spu_t *spu, bool *rerender_text,
     var_SetInteger(text, "spu-elapsed", elapsed_time);
     var_SetBool(text, "text-rerender", false);
 
-    if (text->pf_render_html && region->psz_html)
-        text->pf_render_html(text, region, region, chroma_list);
-    else if (text->pf_render_text)
-        text->pf_render_text(text, region, region, chroma_list);
+    if ( region->p_text )
+        text->pf_render(text, region, region, chroma_list);
     *rerender_text = var_GetBool(text, "text-rerender");
 }
 
@@ -552,7 +550,7 @@ static void SpuSelectSubpictures(spu_t *spu,
             channel[channel_count++] = i_channel;
     }
 
-    /* Fill up the subpicture_array arrays with relevent pictures */
+    /* Fill up the subpicture_array arrays with relevant pictures */
     for (int i = 0; i < channel_count; i++) {
         subpicture_t *available_subpic[VOUT_MAX_SUBPICTURES];
         bool         is_available_late[VOUT_MAX_SUBPICTURES];
@@ -1214,8 +1212,8 @@ spu_t *spu_Create(vlc_object_t *object)
     sys->filter_chain_update = NULL;
     vlc_mutex_init(&sys->source_chain_lock);
     vlc_mutex_init(&sys->filter_chain_lock);
-    sys->source_chain = filter_chain_New(spu, "sub source", false);
-    sys->filter_chain = filter_chain_New(spu, "sub filter", false);
+    sys->source_chain = filter_chain_New(spu, "sub source");
+    sys->filter_chain = filter_chain_New(spu, "sub filter");
 
     /* Load text and scale module */
     sys->text = SpuRenderCreateAndLoadText(spu);

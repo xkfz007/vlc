@@ -47,11 +47,8 @@
 #   define EWOULDBLOCK WSAEWOULDBLOCK
 #   undef EAGAIN
 #   define EAGAIN WSAEWOULDBLOCK
-#   undef EINTR
-#   define EINTR WSAEINTR
 #endif
-
-#include "libvlc.h" /* vlc_object_waitpipe */
+#include <vlc_interrupt.h>
 
 static int SocksNegotiate( vlc_object_t *, int fd, int i_socks_version,
                            const char *psz_user, const char *psz_passwd );
@@ -75,10 +72,6 @@ int net_Connect( vlc_object_t *p_this, const char *psz_host, int i_port,
     const char      *psz_realhost;
     char            *psz_socks;
     int             i_realport, i_handle = -1;
-
-    int evfd = vlc_object_waitpipe (p_this);
-    if (evfd == -1)
-        return -1;
 
     psz_socks = var_InheritString( p_this, "socks" );
     if( psz_socks != NULL )
@@ -134,7 +127,7 @@ int net_Connect( vlc_object_t *p_this, const char *psz_host, int i_port,
         .ai_flags = AI_NUMERICSERV | AI_IDN,
     }, *res;
 
-    int val = vlc_getaddrinfo (psz_realhost, i_realport, &hints, &res);
+    int val = vlc_getaddrinfo_i11e(psz_realhost, i_realport, &hints, &res);
     if (val)
     {
         msg_Err (p_this, "cannot resolve %s port %d : %s", psz_realhost,
@@ -160,22 +153,26 @@ int net_Connect( vlc_object_t *p_this, const char *psz_host, int i_port,
 
         if( connect( fd, ptr->ai_addr, ptr->ai_addrlen ) )
         {
-            if( net_errno != EINPROGRESS && net_errno != EINTR )
+            if( net_errno != EINPROGRESS && errno != EINTR )
             {
                 msg_Err( p_this, "connection failed: %s",
                          vlc_strerror_c(net_errno) );
                 goto next_ai;
             }
 
-            struct pollfd ufd[2] = {
-                { .fd = fd,   .events = POLLOUT },
-                { .fd = evfd, .events = POLLIN },
-            };
+            struct pollfd ufd;
 
-            do
-                /* NOTE: timeout screwed up if we catch a signal (EINTR) */
-                val = poll (ufd, sizeof (ufd) / sizeof (ufd[0]), timeout);
-            while ((val == -1) && (net_errno == EINTR));
+            ufd.fd = fd;
+            ufd.events = POLLOUT;
+
+            do  /* NOTE: timeout screwed up if we catch a signal (EINTR) */
+            {
+                if (vlc_killed())
+                    goto next_ai;
+
+                val = vlc_poll_i11e(&ufd, 1, timeout);
+            }
+            while (val == -1 && errno == EINTR);
 
             switch (val)
             {
@@ -187,10 +184,6 @@ int net_Connect( vlc_object_t *p_this, const char *psz_host, int i_port,
                  case 0: /* timeout */
                      msg_Warn (p_this, "connection timed out");
                      goto next_ai;
-
-                 default: /* something happended */
-                     if (ufd[1].revents)
-                         goto next_ai; /* LibVLC object killed */
             }
 
             /* There is NO WAY around checking SO_ERROR.
@@ -244,7 +237,10 @@ int net_AcceptSingle (vlc_object_t *obj, int lfd)
     int fd = vlc_accept (lfd, NULL, NULL, true);
     if (fd == -1)
     {
-        if (net_errno != EAGAIN && net_errno != EWOULDBLOCK)
+        if (net_errno != EAGAIN)
+#if (EAGAIN != EWOULDBLOCK)
+          if (net_errno != EWOULDBLOCK)
+#endif
             msg_Err (obj, "accept failed (from socket %d): %s", lfd,
                      vlc_strerror_c(net_errno));
         return -1;
@@ -354,7 +350,7 @@ static int SocksNegotiate( vlc_object_t *p_obj,
 
     if( net_Write( p_obj, fd, buffer, i_len ) != i_len )
         return VLC_EGENERIC;
-    if( net_Read( p_obj, fd, buffer, 2, true ) != 2 )
+    if( net_Read( p_obj, fd, buffer, 2) != 2 )
         return VLC_EGENERIC;
 
     msg_Dbg( p_obj, "socks: v=%d method=%x", buffer[0], buffer[1] );
@@ -381,7 +377,7 @@ static int SocksNegotiate( vlc_object_t *p_obj,
         if( net_Write( p_obj, fd, buffer, i_len ) != i_len )
             return VLC_EGENERIC;
 
-        if( net_Read( p_obj, fd, buffer, 2, true ) != 2 )
+        if( net_Read( p_obj, fd, buffer, 2 ) != 2 )
             return VLC_EGENERIC;
 
         msg_Dbg( p_obj, "socks: v=%d status=%x", buffer[0], buffer[1] );
@@ -439,7 +435,7 @@ static int SocksHandshakeTCP( vlc_object_t *p_obj,
         };
         struct addrinfo *res;
 
-        if (vlc_getaddrinfo (psz_host, 0, &hints, &res))
+        if (vlc_getaddrinfo_i11e(psz_host, 0, &hints, &res))
             return VLC_EGENERIC;
 
         buffer[0] = i_socks_version;
@@ -453,7 +449,7 @@ static int SocksHandshakeTCP( vlc_object_t *p_obj,
 
         if( net_Write( p_obj, fd, buffer, 9 ) != 9 )
             return VLC_EGENERIC;
-        if( net_Read( p_obj, fd, buffer, 8, true ) != 8 )
+        if( net_Read( p_obj, fd, buffer, 8 ) != 8 )
             return VLC_EGENERIC;
 
         msg_Dbg( p_obj, "socks: v=%d cd=%d",
@@ -483,7 +479,7 @@ static int SocksHandshakeTCP( vlc_object_t *p_obj,
             return VLC_EGENERIC;
 
         /* Read the header */
-        if( net_Read( p_obj, fd, buffer, 5, true ) != 5 )
+        if( net_Read( p_obj, fd, buffer, 5 ) != 5 )
             return VLC_EGENERIC;
 
         msg_Dbg( p_obj, "socks: v=%d rep=%d atyp=%d",
@@ -505,7 +501,7 @@ static int SocksHandshakeTCP( vlc_object_t *p_obj,
         else
             return VLC_EGENERIC;
 
-        if( net_Read( p_obj, fd, buffer, i_len, true ) != i_len )
+        if( net_Read( p_obj, fd, buffer, i_len ) != i_len )
             return VLC_EGENERIC;
     }
 

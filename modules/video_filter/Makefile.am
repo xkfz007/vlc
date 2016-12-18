@@ -3,6 +3,8 @@ video_filterdir = $(pluginsdir)/video_filter
 noinst_HEADERS += video_filter/filter_picture.h
 
 # video filters
+libedgedetection_plugin_la_SOURCES = video_filter/edgedetection.c
+libedgedetection_plugin_la_LIBADD = $(LIBM)
 libadjust_plugin_la_SOURCES = video_filter/adjust.c video_filter/adjust_sat_hue.c video_filter/adjust_sat_hue.h
 libadjust_plugin_la_LIBADD = $(LIBM)
 libalphamask_plugin_la_SOURCES = video_filter/alphamask.c
@@ -64,7 +66,6 @@ libtransform_plugin_la_SOURCES = video_filter/transform.c
 libvhs_plugin_la_SOURCES = video_filter/vhs.c
 libwave_plugin_la_SOURCES = video_filter/wave.c
 libwave_plugin_la_LIBADD = $(LIBM)
-libyuvp_plugin_la_SOURCES = video_filter/yuvp.c
 
 video_filter_LTLIBRARIES = \
 	libadjust_plugin.la \
@@ -75,6 +76,7 @@ video_filter_LTLIBRARIES = \
 	libcanvas_plugin.la \
 	libcolorthres_plugin.la \
 	libcroppadd_plugin.la \
+	libedgedetection_plugin.la \
 	liberase_plugin.la \
 	libextract_plugin.la \
 	libgradient_plugin.la \
@@ -95,7 +97,6 @@ video_filter_LTLIBRARIES = \
 	libtransform_plugin.la \
 	libwave_plugin.la \
 	libgradfun_plugin.la \
-	libyuvp_plugin.la \
 	libantiflicker_plugin.la \
 	libhqdn3d_plugin.la \
 	libanaglyph_plugin.la \
@@ -105,31 +106,6 @@ video_filter_LTLIBRARIES = \
 	libfreeze_plugin.la \
 	libpuzzle_plugin.la \
 	librotate_plugin.la
-
-libatmo_plugin_la_SOURCES = video_filter/atmo/atmo.cpp \
-	video_filter/atmo/AtmoDefs.h \
-	video_filter/atmo/AtmoCalculations.cpp video_filter/atmo/AtmoCalculations.h \
-	video_filter/atmo/AtmoConfig.cpp video_filter/atmo/AtmoConfig.h \
-	video_filter/atmo/AtmoConnection.cpp video_filter/atmo/AtmoConnection.h \
-	video_filter/atmo/AtmoDynData.cpp video_filter/atmo/AtmoDynData.h \
-	video_filter/atmo/AtmoExternalCaptureInput.cpp video_filter/atmo/AtmoExternalCaptureInput.h \
-	video_filter/atmo/AtmoInput.cpp video_filter/atmo/AtmoInput.h \
-	video_filter/atmo/AtmoLiveView.cpp video_filter/atmo/AtmoLiveView.h \
-	video_filter/atmo/AtmoOutputFilter.cpp video_filter/atmo/AtmoOutputFilter.h \
-	video_filter/atmo/AtmoThread.cpp video_filter/atmo/AtmoThread.h \
-	video_filter/atmo/AtmoTools.cpp video_filter/atmo/AtmoTools.h \
-	video_filter/atmo/AtmoZoneDefinition.cpp video_filter/atmo/AtmoZoneDefinition.h \
-	video_filter/atmo/AtmoChannelAssignment.cpp video_filter/atmo/AtmoChannelAssignment.h \
-	video_filter/atmo/AtmoClassicConnection.cpp video_filter/atmo/AtmoClassicConnection.h \
-	video_filter/atmo/AtmoDmxSerialConnection.cpp video_filter/atmo/AtmoDmxSerialConnection.h \
-	video_filter/atmo/DmxTools.cpp video_filter/atmo/DmxTools.h \
-	video_filter/atmo/AtmoMultiConnection.cpp video_filter/atmo/AtmoMultiConnection.h \
-	video_filter/atmo/MoMoConnection.cpp video_filter/atmo/MoMoConnection.h \
-	video_filter/atmo/FnordlichtConnection.cpp video_filter/atmo/FnordlichtConnection.h \
-	video_filter/atmo/AtmoPacketQueue.cpp video_filter/atmo/AtmoPacketQueue.h
-libatmo_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(video_filterdir)'
-video_filter_LTLIBRARIES += $(LTLIBatmo)
-EXTRA_LTLIBRARIES += libatmo_plugin.la
 
 libdeinterlace_plugin_la_SOURCES = \
 	video_filter/deinterlace/deinterlace.c video_filter/deinterlace/deinterlace.h \
@@ -148,17 +124,11 @@ if HAVE_NEON
 libdeinterlace_plugin_la_SOURCES += video_filter/deinterlace/merge_arm.S
 libdeinterlace_plugin_la_CFLAGS += -DCAN_COMPILE_ARM
 endif
-video_filter_LTLIBRARIES += libdeinterlace_plugin.la
-
-libdynamicoverlay_plugin_la_SOURCES = \
-	video_filter/dynamicoverlay/dynamicoverlay_buffer.c \
-	video_filter/dynamicoverlay/dynamicoverlay_queue.c \
-	video_filter/dynamicoverlay/dynamicoverlay_list.c \
-	video_filter/dynamicoverlay/dynamicoverlay_commands.c \
-	video_filter/dynamicoverlay/dynamicoverlay.c video_filter/dynamicoverlay/dynamicoverlay.h
-if !HAVE_WIN32
-video_filter_LTLIBRARIES += libdynamicoverlay_plugin.la
+if HAVE_ARM64
+libdeinterlace_plugin_la_SOURCES += video_filter/deinterlace/merge_arm64.S
+libdeinterlace_plugin_la_CFLAGS += -DCAN_COMPILE_ARM64
 endif
+video_filter_LTLIBRARIES += libdeinterlace_plugin.la
 
 libopencv_wrapper_plugin_la_SOURCES = video_filter/opencv_wrapper.c
 libopencv_wrapper_plugin_la_CPPFLAGS = $(AM_CPPFLAGS) $(OPENCV_CFLAGS)
@@ -173,33 +143,6 @@ libpostproc_plugin_la_LIBADD = $(LIBM) $(POSTPROC_LIBS) $(AVUTIL_LIBS)
 libpostproc_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(video_filterdir)'
 video_filter_LTLIBRARIES += $(LTLIBpostproc)
 EXTRA_LTLIBRARIES += libpostproc_plugin.la
-
-# sub filters
-libsubsdelay_plugin_la_SOURCES = video_filter/subsdelay.c
-video_filter_LTLIBRARIES += libsubsdelay_plugin.la
-
-# sub sources
-libaudiobargraph_v_plugin_la_SOURCES = video_filter/audiobargraph_v.c
-libaudiobargraph_v_plugin_la_LIBADD = $(LIBM)
-liblogo_plugin_la_SOURCES = video_filter/logo.c
-libmarq_plugin_la_SOURCES = video_filter/marq.c
-libmosaic_plugin_la_SOURCES = video_filter/mosaic.c video_filter/mosaic.h
-libmosaic_plugin_la_LIBADD = $(LIBM)
-librss_plugin_la_SOURCES = video_filter/rss.c
-
-video_filter_LTLIBRARIES += \
-	libaudiobargraph_v_plugin.la \
-	liblogo_plugin.la \
-	libmarq_plugin.la \
-	libmosaic_plugin.la \
-	librss_plugin.la
-
-libremoteosd_plugin_la_SOURCES = video_filter/remoteosd.c video_filter/remoteosd_rfbproto.h
-libremoteosd_plugin_la_CFLAGS = $(AM_CFLAGS) $(GCRYPT_CFLAGS)
-libremoteosd_plugin_la_LIBADD = $(GCRYPT_LIBS) $(SOCKET_LIBS) $(LIBPTHREAD)
-if HAVE_GCRYPT
-video_filter_LTLIBRARIES += libremoteosd_plugin.la
-endif
 
 # misc
 libblend_plugin_la_SOURCES = video_filter/blend.cpp

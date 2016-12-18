@@ -61,6 +61,25 @@ static char *FromWide (const wchar_t *wide)
     return out;
 }
 
+#if (_WIN32_WINNT < _WIN32_WINNT_WIN8)
+static BOOL SetDefaultDllDirectories_(DWORD flags)
+{
+    HMODULE h = GetModuleHandle(TEXT("kernel32.dll"));
+    if (h == NULL)
+        return FALSE;
+
+    BOOL WINAPI (*SetDefaultDllDirectoriesReal)(DWORD);
+
+    SetDefaultDllDirectoriesReal = GetProcAddress(h,
+                                                  "SetDefaultDllDirectories");
+    if (SetDefaultDllDirectoriesReal == NULL)
+        return FALSE;
+
+    return SetDefaultDllDirectoriesReal(flags);
+}
+# define SetDefaultDllDirectories SetDefaultDllDirectories_
+#endif
+
 int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
                     LPSTR lpCmdLine,
                     int nCmdShow )
@@ -83,8 +102,8 @@ int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
     HeapSetInformation(NULL, HeapEnableTerminationOnCorruption, NULL, 0);
 
     /* SetProcessDEPPolicy */
-    HINSTANCE h_Kernel32 = LoadLibraryW(L"kernel32.dll");
-    if(h_Kernel32)
+    HINSTANCE h_Kernel32 = GetModuleHandle(TEXT("kernel32.dll"));
+    if (h_Kernel32 != NULL)
     {
         BOOL (WINAPI * mySetProcessDEPPolicy)( DWORD dwFlags);
         BOOL (WINAPI * mySetDllDirectoryA)(const char* lpPathName);
@@ -100,9 +119,9 @@ int WINAPI WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance,
                             GetProcAddress(h_Kernel32, "SetDllDirectoryA");
         if(mySetDllDirectoryA)
             mySetDllDirectoryA("");
-
-        FreeLibrary(h_Kernel32);
     }
+
+    SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
 
     /* Args */
     wchar_t **wargv = CommandLineToArgvW (GetCommandLine (), &argc);
@@ -243,32 +262,26 @@ static void check_crashdump(void)
 
                 if( FtpPutFile( ftp, mv_crashdump_path, remote_file,
                             FTP_TRANSFER_TYPE_BINARY, 0) )
-                    MessageBox( NULL, L"Report sent correctly. Thanks a lot " \
-                                "for the help.", L"Report sent", MB_OK);
+                    fprintf(stderr, "Report sent correctly to FTP.\n");
                 else
-                    MessageBox( NULL, L"There was an error while "\
-                                "transferring the data to the FTP server.\n"\
-                                "Thanks a lot for the help.",
-                                L"Report sending failed", MB_OK);
+                    fprintf(stderr,"Couldn't send report to FTP server\n");
+
                 InternetCloseHandle(ftp);
             }
             else
             {
-                MessageBox( NULL, L"There was an error while connecting to " \
-                                "the FTP server. "\
-                                "Thanks a lot for the help.",
-                                L"Report sending failed", MB_OK);
-                fprintf(stderr,"Can't connect to FTP server 0x%08lu\n",
+                fprintf(stderr, "Can't connect to FTP server 0x%08lx\n",
                         (unsigned long)GetLastError());
             }
             InternetCloseHandle(Hint);
         }
         else
         {
-              MessageBox( NULL, L"There was an error while connecting to the Internet.\n"\
-                                "Thanks a lot for the help anyway.",
-                                L"Report sending failed", MB_OK);
+              fprintf(stderr, "There was an error while connecting to the "
+                      "Internet  0x%08lx\n", (unsigned long)GetLastError());
         }
+        MessageBox( NULL, L"Thanks a lot for helping improving VLC!",
+                    L"VLC crash report" , MB_OK);
     }
 
     _wremove(mv_crashdump_path);

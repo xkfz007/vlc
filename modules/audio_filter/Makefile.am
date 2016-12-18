@@ -56,6 +56,16 @@ libtrivial_channel_mixer_plugin_la_SOURCES = \
 	audio_filter/channel_mixer/trivial.c
 libsimple_channel_mixer_plugin_la_SOURCES = \
 	audio_filter/channel_mixer/simple.c
+libsimple_channel_mixer_plugin_la_CFLAGS =
+libsimple_channel_mixer_plugin_la_LIBADD =
+
+if HAVE_NEON
+EXTRA_LTLIBRARIES += libsimple_channel_mixer_plugin_arm_neon.la
+libsimple_channel_mixer_plugin_arm_neon_la_SOURCES = arm_neon/simple_channel_mixer.S
+
+libsimple_channel_mixer_plugin_la_LIBADD += libsimple_channel_mixer_plugin_arm_neon.la
+libsimple_channel_mixer_plugin_la_CFLAGS += -DCAN_COMPILE_ARM
+endif
 
 audio_filter_LTLIBRARIES += \
 	libdolby_surround_decoder_plugin.la \
@@ -66,35 +76,17 @@ audio_filter_LTLIBRARIES += \
 	libtrivial_channel_mixer_plugin.la
 
 # Converters
-liba52tofloat32_plugin_la_SOURCES = audio_filter/converter/a52tofloat32.c
-liba52tofloat32_plugin_la_CPPFLAGS = $(AM_CPPFLAGS) $(CPPFLAGS_a52tofloat32)
-liba52tofloat32_plugin_la_LIBADD = $(LIBM) $(LIBS_a52tofloat32)
-liba52tofloat32_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(audio_filterdir)'
-libdtstofloat32_plugin_la_SOURCES = audio_filter/converter/dtstofloat32.c
-libdtstofloat32_plugin_la_CPPFLAGS = $(AM_CPPFLAGS) $(DCA_CFLAGS)
-libdtstofloat32_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(audio_filterdir)'
-libdtstofloat32_plugin_la_LIBADD = $(LIBM) $(DCA_LIBS)
-EXTRA_LTLIBRARIES += liba52tofloat32_plugin.la libdtstofloat32_plugin.la
-audio_filter_LTLIBRARIES += $(LTLIBa52tofloat32) $(LTLIBdtstofloat32)
-
-libmad_plugin_la_SOURCES = audio_filter/converter/mpgatofixed32.c
-libmad_plugin_la_CPPFLAGS = $(AM_CPPFLAGS) $(MAD_CFLAGS)
-libmad_plugin_la_LIBADD = $(AM_LIBADD) $(MAD_LIBS)
-if HAVE_MAD
-audio_filter_LTLIBRARIES += libmad_plugin.la
-endif
-
 libaudio_format_plugin_la_SOURCES = audio_filter/converter/format.c
 libaudio_format_plugin_la_CPPFLAGS = $(AM_CPPFLAGS)
 libaudio_format_plugin_la_LIBADD = $(LIBM)
 
-liba52tospdif_plugin_la_SOURCES = audio_filter/converter/a52tospdif.c
-libdtstospdif_plugin_la_SOURCES = audio_filter/converter/dtstospdif.c
+libtospdif_plugin_la_SOURCES = audio_filter/converter/tospdif.c \
+	packetizer/a52.h \
+	packetizer/dts_header.c packetizer/dts_header.h
 
 audio_filter_LTLIBRARIES += \
-	liba52tospdif_plugin.la \
-	libaudio_format_plugin.la \
-	libdtstospdif_plugin.la
+	libtospdif_plugin.la \
+	libaudio_format_plugin.la
 
 # Resamplers
 libbandlimited_resampler_plugin_la_SOURCES = \
@@ -104,14 +96,21 @@ libugly_resampler_plugin_la_SOURCES = audio_filter/resampler/ugly.c
 libsamplerate_plugin_la_SOURCES = audio_filter/resampler/src.c
 libsamplerate_plugin_la_CPPFLAGS = $(AM_CPPFLAGS) $(SAMPLERATE_CFLAGS)
 libsamplerate_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(audio_filterdir)'
-libsamplerate_plugin_la_LIBADD = $(LIBM) $(SAMPLERATE_LIBS)
+libsamplerate_plugin_la_LIBADD = $(SAMPLERATE_LIBS) $(LIBM)
+
+libsoxr_plugin_la_SOURCES = audio_filter/resampler/soxr.c
+libsoxr_plugin_la_CPPFLAGS = $(AM_CPPFLAGS) $(SOXR_CFLAGS)
+libsoxr_plugin_la_LDFLAGS = $(AM_LDFLAGS) -rpath '$(audio_filterdir)'
+libsoxr_plugin_la_LIBADD = $(SOXR_LIBS) $(LIBM)
 
 audio_filter_LTLIBRARIES += \
 	$(LTLIBsamplerate) \
+	$(LTLIBsoxr) \
 	libugly_resampler_plugin.la
 EXTRA_LTLIBRARIES += \
 	libbandlimited_resampler_plugin.la \
-	libsamplerate_plugin.la
+	libsamplerate_plugin.la \
+	libsoxr_plugin.la
 
 libspeex_resampler_plugin_la_SOURCES = audio_filter/resampler/speex.c
 libspeex_resampler_plugin_la_CFLAGS = $(AM_CFLAGS) $(SPEEXDSP_CFLAGS)

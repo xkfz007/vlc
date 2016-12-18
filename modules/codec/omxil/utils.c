@@ -81,13 +81,14 @@ OMX_ERRORTYPE WaitForOmxEvent(OmxEventQueue *queue, OMX_EVENTTYPE *event,
     OMX_U32 *data_1, OMX_U32 *data_2, OMX_PTR *event_data)
 {
     OmxEvent *p_event;
+    mtime_t deadline = mdate() + CLOCK_FREQ;
 
     vlc_mutex_lock(&queue->mutex);
 
-    if(!queue->p_events)
-        vlc_cond_timedwait(&queue->cond, &queue->mutex, mdate()+CLOCK_FREQ);
+    while ((p_event = queue->p_events) == NULL)
+        if (vlc_cond_timedwait(&queue->cond, &queue->mutex, deadline))
+            break;
 
-    p_event = queue->p_events;
     if(p_event)
     {
         queue->p_events = p_event->next;
@@ -217,12 +218,12 @@ void CopyOmxPicture( int i_color_format, picture_t *p_pic,
     }
 #ifdef CAN_COMPILE_SSE2
     if( i_color_format == OMX_COLOR_FormatYUV420SemiPlanar
-        && vlc_CPU_SSE2() && p_architecture_specific->data )
+        && vlc_CPU_SSE2() && p_architecture_specific && p_architecture_specific->data )
     {
         copy_cache_t *p_surface_cache = (copy_cache_t*)p_architecture_specific->data;
         uint8_t *ppi_src_pointers[2] = { p_src, p_src + i_src_stride * i_slice_height };
         size_t pi_src_strides[2] = { i_src_stride, i_src_stride };
-        CopyFromNv12( p_pic, ppi_src_pointers, pi_src_strides, i_src_stride, i_slice_height, p_surface_cache );
+        CopyFromNv12( p_pic, ppi_src_pointers, pi_src_strides, i_slice_height, p_surface_cache );
         return;
     }
 #endif
@@ -277,35 +278,6 @@ void CopyVlcPicture( decoder_t *p_dec, OMX_BUFFERHEADERTYPE *p_header,
     }
 }
 
-int IgnoreOmxDecoderPadding(const char *name)
-{
-    // The list of decoders that signal padding properly is not necessary,
-    // since that is the default, but keep it here for reference. (This is
-    // only relevant for manufacturers that are known to have decoders with
-    // this kind of bug.)
-/*
-    static const char *padding_decoders[] = {
-        "OMX.SEC.AVC.Decoder",
-        "OMX.SEC.wmv7.dec",
-        "OMX.SEC.wmv8.dec",
-        NULL
-    };
-*/
-    static const char *nopadding_decoders[] = {
-        "OMX.SEC.avc.dec",
-        "OMX.SEC.avcdec",
-        "OMX.SEC.MPEG4.Decoder",
-        "OMX.SEC.mpeg4.dec",
-        "OMX.SEC.vc1.dec",
-        NULL
-    };
-    for (const char **ptr = nopadding_decoders; *ptr; ptr++) {
-        if (!strcmp(*ptr, name))
-            return 1;
-    }
-    return 0;
-}
-
 /*****************************************************************************
  * Utility functions
  *****************************************************************************/
@@ -329,13 +301,6 @@ bool OMXCodec_IsBlacklisted( const char *p_name, unsigned int i_name_len )
          * sensible latency. (Also, even if that one isn't found, in general,
          * using SW codecs is usually more than fast enough for MP3.) */
         "OMX.SEC.MP3.Decoder",
-        /* This codec should be able to handle both VC1 and WMV3, but
-         * for VC1 it doesn't output any buffers at all (in the way we use
-         * it) and for WMV3 it outputs plain black buffers. Thus ignore
-         * it until we can make it work properly. */
-        "OMX.Nvidia.vc1.decode",
-        /* crashes mediaserver */
-        "OMX.MTK.VIDEO.DECODER.MPEG4",
         /* black screen */
         "OMX.MTK.VIDEO.DECODER.VC1",
         /* Not working or crashing (Samsung) */
@@ -374,6 +339,89 @@ bool OMXCodec_IsBlacklisted( const char *p_name, unsigned int i_name_len )
     }
 
     return false;
+}
+
+struct str2quirks {
+    const char *psz_name;
+    int i_quirks;
+};
+
+int OMXCodec_GetQuirks( int i_cat, vlc_fourcc_t i_codec,
+                        const char *p_name, unsigned int i_name_len )
+{
+    static const struct str2quirks quirks_prefix[] = {
+        { "OMX.MTK.VIDEO.DECODER.MPEG4", OMXCODEC_QUIRKS_NEED_CSD },
+        { "OMX.Marvell", OMXCODEC_AUDIO_QUIRKS_NEED_CHANNELS },
+
+        /* The list of decoders that signal padding properly is not necessary,
+         * since that is the default, but keep it here for reference. (This is
+         * only relevant for manufacturers that are known to have decoders with
+         * this kind of bug.)
+         * static const char *padding_decoders[] = {
+         *    "OMX.SEC.AVC.Decoder",
+         *    "OMX.SEC.wmv7.dec",
+         *    "OMX.SEC.wmv8.dec",
+         *     NULL
+         * };
+         */
+        { "OMX.SEC.avc.dec", OMXCODEC_VIDEO_QUIRKS_IGNORE_PADDING },
+        { "OMX.SEC.avcdec", OMXCODEC_VIDEO_QUIRKS_IGNORE_PADDING },
+        { "OMX.SEC.MPEG4.Decoder", OMXCODEC_VIDEO_QUIRKS_IGNORE_PADDING },
+        { "OMX.SEC.mpeg4.dec", OMXCODEC_VIDEO_QUIRKS_IGNORE_PADDING },
+        { "OMX.SEC.vc1.dec", OMXCODEC_VIDEO_QUIRKS_IGNORE_PADDING },
+        { NULL, 0 }
+    };
+
+    static struct str2quirks quirks_suffix[] = {
+        { NULL, 0 }
+    };
+
+    int i_quirks = OMXCODEC_NO_QUIRKS;
+
+    if( i_cat == VIDEO_ES )
+    {
+        switch( i_codec )
+        {
+        case VLC_CODEC_H264:
+        case VLC_CODEC_VC1:
+            i_quirks |= OMXCODEC_QUIRKS_NEED_CSD;
+            break;
+        }
+    } else if( i_cat == AUDIO_ES )
+    {
+        switch( i_codec )
+        {
+        case VLC_CODEC_VORBIS:
+        case VLC_CODEC_MP4A:
+            i_quirks |= OMXCODEC_QUIRKS_NEED_CSD;
+            break;
+        }
+    }
+
+    /* p_name is not '\0' terminated */
+
+    for( const struct str2quirks *p_q_prefix = quirks_prefix; p_q_prefix->psz_name;
+         p_q_prefix++ )
+    {
+        const char *psz_prefix = p_q_prefix->psz_name;
+        if( !strncmp( p_name, psz_prefix,
+           __MIN( strlen(psz_prefix), i_name_len ) ) )
+           i_quirks |= p_q_prefix->i_quirks;
+    }
+
+    for( const struct str2quirks *p_q_suffix = quirks_suffix; p_q_suffix->psz_name;
+         p_q_suffix++ )
+    {
+        const char *psz_suffix = p_q_suffix->psz_name;
+        size_t i_suffix_len = strlen( psz_suffix );
+
+        if( i_name_len > i_suffix_len
+         && !strncmp( p_name + i_name_len - i_suffix_len, psz_suffix,
+                      i_suffix_len ) )
+           i_quirks |= p_q_suffix->i_quirks;
+    }
+
+    return i_quirks;
 }
 
 /*****************************************************************************

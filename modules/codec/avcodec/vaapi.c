@@ -121,8 +121,7 @@ static int Extract( vlc_va_t *va, picture_t *p_picture, uint8_t *data )
             pp_plane[i] = (uint8_t*)p_base + image.offsets[i_src_plane];
             pi_pitch[i] = image.pitches[i_src_plane];
         }
-        CopyFromYv12( p_picture, pp_plane, pi_pitch, sys->width, sys->height,
-                      &sys->image_cache );
+        CopyFromYv12( p_picture, pp_plane, pi_pitch, sys->height, &sys->image_cache );
     }
     else
     {
@@ -135,8 +134,7 @@ static int Extract( vlc_va_t *va, picture_t *p_picture, uint8_t *data )
             pp_plane[i] = (uint8_t*)p_base + image.offsets[i];
             pi_pitch[i] = image.pitches[i];
         }
-        CopyFromNv12( p_picture, pp_plane, pi_pitch, sys->width, sys->height,
-                      &sys->image_cache );
+        CopyFromNv12( p_picture, pp_plane, pi_pitch, sys->height, &sys->image_cache );
     }
 
     vaUnmapBuffer(sys->hw_ctx.display, image.buf);
@@ -171,6 +169,7 @@ static int Get( vlc_va_t *va, picture_t *pic, uint8_t **data )
 
 static void Release( void *opaque, uint8_t *data )
 {
+    (void) data;
     picture_t *pic = opaque;
     VASurfaceID *surface = pic->context;
     vlc_va_sys_t *sys = (void *)((((uintptr_t)surface)
@@ -184,18 +183,6 @@ static void Release( void *opaque, uint8_t *data )
 
     pic->context = NULL;
     picture_Release(pic);
-    (void) data;
-}
-
-static int Setup( vlc_va_t *va, AVCodecContext *avctx, vlc_fourcc_t *pi_chroma )
-{
-    vlc_va_sys_t *sys = va->sys;
-
-    if (sys->width != avctx->coded_width || sys->height != avctx->coded_height)
-        return VLC_EGENERIC;
-
-    *pi_chroma = VLC_CODEC_YV12;
-    return VLC_SUCCESS;
 }
 
 static void Delete( vlc_va_t *va, AVCodecContext *avctx )
@@ -215,7 +202,7 @@ static void Delete( vlc_va_t *va, AVCodecContext *avctx )
     XCloseDisplay( sys->p_display_x11 );
 #endif
 #ifdef VLC_VA_BACKEND_DRM
-    close( sys->drm_fd );
+    vlc_close( sys->drm_fd );
 #endif
     free( sys );
 }
@@ -331,7 +318,16 @@ static int Create( vlc_va_t *va, AVCodecContext *ctx, enum PixelFormat pix_fmt,
     case AV_CODEC_ID_H264:
         i_profile = VAProfileH264High;
         count = 18;
-        break;;
+        break;
+    case AV_CODEC_ID_HEVC:
+        if (ctx->profile == FF_PROFILE_HEVC_MAIN)
+            i_profile = VAProfileHEVCMain;
+        else if (ctx->profile == FF_PROFILE_HEVC_MAIN_10)
+            i_profile = VAProfileHEVCMain10;
+        else
+            return VLC_EGENERIC;
+        count = 18;
+        break;
     default:
         return VLC_EGENERIC;
     }
@@ -370,14 +366,23 @@ static int Create( vlc_va_t *va, AVCodecContext *ctx, enum PixelFormat pix_fmt,
     sys->hw_ctx.display = vaGetDisplay(sys->p_display_x11);
 #endif
 #ifdef VLC_VA_BACKEND_DRM
-    sys->drm_fd = vlc_open("/dev/dri/card0", O_RDWR);
-    if( sys->drm_fd == -1 )
-    {
-        msg_Err( va, "Could not access rendering device: %m" );
-        goto error;
-    }
+    static const char const *drm_device_paths[] = {
+        "/dev/dri/renderD128",
+        "/dev/dri/card0"
+    };
 
-    sys->hw_ctx.display = vaGetDisplayDRM(sys->drm_fd);
+    for (int i = 0; ARRAY_SIZE(drm_device_paths); i++) {
+        sys->drm_fd = vlc_open(drm_device_paths[i], O_RDWR);
+        if (sys->drm_fd < 0)
+            continue;
+
+        sys->hw_ctx.display = vaGetDisplayDRM(sys->drm_fd);
+        if (sys->hw_ctx.display)
+            break;
+
+        vlc_close(sys->drm_fd);
+        sys->drm_fd = -1;
+    }
 #endif
     if (sys->hw_ctx.display == NULL)
     {
@@ -468,7 +473,6 @@ static int Create( vlc_va_t *va, AVCodecContext *ctx, enum PixelFormat pix_fmt,
     ctx->hwaccel_context = &sys->hw_ctx;
     va->sys = sys;
     va->description = vaQueryVendorString(sys->hw_ctx.display);
-    va->setup = Setup;
     va->get = Get;
     va->release = Release;
     va->extract = Extract;
@@ -490,7 +494,7 @@ error:
 #endif
 #ifdef VLC_VA_BACKEND_DRM
     if( sys->drm_fd != -1 )
-        close( sys->drm_fd );
+        vlc_close( sys->drm_fd );
 #endif
     free( sys );
     return VLC_EGENERIC;

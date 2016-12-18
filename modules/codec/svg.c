@@ -136,7 +136,7 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
     p_block = *pp_block;
     *pp_block = NULL;
 
-    if( p_block->i_flags & BLOCK_FLAG_DISCONTINUITY )
+    if( p_block->i_flags & BLOCK_FLAG_CORRUPTED)
     {
         block_Release( p_block );
         return NULL;
@@ -193,6 +193,8 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
     video_format_FixRgb(&p_dec->fmt_out.video);
 
     /* Get a new picture */
+    if( decoder_UpdateVideoFormat( p_dec ) )
+        goto done;
     p_pic = decoder_NewPicture( p_dec );
     if( !p_pic )
         goto done;

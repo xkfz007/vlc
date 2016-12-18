@@ -57,15 +57,15 @@ typedef enum vlc_meta_type_t
     vlc_meta_ShowName,
     vlc_meta_Actors,
     vlc_meta_AlbumArtist,
-    vlc_meta_DiscNumber
+    vlc_meta_DiscNumber,
+    vlc_meta_DiscTotal
 } vlc_meta_type_t;
 
-#define VLC_META_TYPE_COUNT 26
+#define VLC_META_TYPE_COUNT 27
 
 #define ITEM_PREPARSED       1
-#define ITEM_ARTURL_FETCHED  2
-#define ITEM_ART_FETCHED     4
-#define ITEM_ART_NOTFOUND    8
+#define ITEM_ART_FETCHED     2
+#define ITEM_ART_NOTFOUND    4
 
 /**
  * Basic function to deal with meta
@@ -96,14 +96,6 @@ VLC_API void vlc_meta_SetStatus( vlc_meta_t *m, int status );
  * Returns a localizes string describing the meta
  */
 VLC_API const char * vlc_meta_TypeToLocalizedString( vlc_meta_type_t meta_type );
-
-/* deprecated (album-art variable) */
-enum {
-    ALBUM_ART_WHEN_ASKED,
-    ALBUM_ART_WHEN_PLAYED,
-    ALBUM_ART_ALL
-};
-
 
 typedef struct meta_export_t
 {

@@ -71,7 +71,6 @@ vlc_module_end ()
  *****************************************************************************/
 static int Demux  ( demux_t * );
 static int Control( demux_t *, int i_query, va_list args );
-static void FlushQueues( demux_t *p_demux );
 
 #define MAX_ASF_TRACKS (ASF_MAX_STREAMNUMBER + 1)
 #define ASF_PREROLL_FROM_CURRENT -1
@@ -142,6 +141,9 @@ struct demux_sys_t
 static int      DemuxInit( demux_t * );
 static void     DemuxEnd( demux_t * );
 
+static void     FlushQueue( asf_track_t * );
+static void     FlushQueues( demux_t *p_demux );
+
 /*****************************************************************************
  * Open: check file and initializes ASF structures
  *****************************************************************************/
@@ -153,7 +155,7 @@ static int Open( vlc_object_t * p_this )
     const uint8_t     *p_peek;
 
     /* A little test to see if it could be a asf stream */
-    if( stream_Peek( p_demux->s, &p_peek, 16 ) < 16 ) return VLC_EGENERIC;
+    if( vlc_stream_Peek( p_demux->s, &p_peek, 16 ) < 16 ) return VLC_EGENERIC;
 
     ASF_GetGUID( &guid, p_peek );
     if( !guidcmp( &guid, &asf_object_header_guid ) ) return VLC_EGENERIC;
@@ -210,7 +212,9 @@ static int Demux( demux_t *p_demux )
             tk->b_selected = false;
     }
 
-    while( !p_sys->b_eos && p_sys->i_sendtime - p_sys->i_time < (mtime_t)p_sys->p_fp->i_preroll * 1000 + CHUNK )
+    while( !p_sys->b_eos && ( p_sys->i_sendtime - p_sys->i_time - CHUNK < 0 ||
+                            ( p_sys->i_sendtime - p_sys->i_time - CHUNK ) /
+                              UINT64_C( 1000 ) < p_sys->p_fp->i_preroll ) )
     {
         /* Read and demux a packet */
         if( DemuxASFPacket( &p_sys->packet_sys,
@@ -220,7 +224,7 @@ static int Demux( demux_t *p_demux )
             p_sys->b_eos = true;
             /* Check if we have concatenated files */
             const uint8_t *p_peek;
-            if( stream_Peek( p_demux->s, &p_peek, 16 ) == 16 )
+            if( vlc_stream_Peek( p_demux->s, &p_peek, 16 ) == 16 )
             {
                 guid_t guid;
 
@@ -237,8 +241,9 @@ static int Demux( demux_t *p_demux )
             p_sys->i_time = p_sys->i_sendtime;
     }
 
-    if( p_sys->b_eos ||
-       (p_sys->i_sendtime >= p_sys->i_time + (mtime_t)p_sys->p_fp->i_preroll * 1000 + CHUNK) )
+    if( p_sys->b_eos || ( p_sys->i_sendtime - p_sys->i_time - CHUNK >= 0 &&
+                        ( p_sys->i_sendtime - p_sys->i_time - CHUNK ) /
+                          UINT64_C( 1000 ) >= p_sys->p_fp->i_preroll ) )
     {
         bool b_data = Block_Dequeue( p_demux, p_sys->i_time + CHUNK );
 
@@ -258,8 +263,9 @@ static int Demux( demux_t *p_demux )
                 if( DemuxInit( p_demux ) )
                 {
                     msg_Err( p_demux, "failed to load the new header" );
-                    dialog_Fatal( p_demux, _("Could not demux ASF stream"), "%s",
-                                  _("VLC failed to load the ASF header.") );
+                    vlc_dialog_display_error( p_demux,
+                        _("Could not demux ASF stream"), "%s",
+                        _("VLC failed to load the ASF header.") );
                     return 0;
                 }
                 es_out_Control( p_demux->out, ES_OUT_RESET_PCR );
@@ -372,7 +378,7 @@ static int SeekIndex( demux_t *p_demux, mtime_t i_date, float f_pos )
     uint64_t i_offset = (uint64_t)p_index->index_entry[i_entry].i_packet_number *
                         p_sys->p_fp->i_min_data_packet_size;
 
-    if ( stream_Seek( p_demux->s, i_offset + p_sys->i_data_begin ) == VLC_SUCCESS )
+    if ( vlc_stream_Seek( p_demux->s, i_offset + p_sys->i_data_begin ) == VLC_SUCCESS )
     {
         es_out_Control( p_demux->out, ES_OUT_SET_NEXT_DISPLAY_TIME, VLC_TS_0 + i_date );
         return VLC_SUCCESS;
@@ -389,12 +395,15 @@ static void SeekPrepare( demux_t *p_demux )
     p_sys->i_time = -1;
     p_sys->i_sendtime = -1;
     p_sys->i_preroll_start = ASFPACKET_PREROLL_FROM_CURRENT;
-    FlushQueues( p_demux );
+
     for( int i = 0; i < MAX_ASF_TRACKS ; i++ )
     {
         asf_track_t *tk = p_sys->track[i];
         if( tk )
+        {
+            FlushQueue( tk );
             tk->i_time = -1;
+        }
     }
 
     es_out_Control( p_demux->out, ES_OUT_RESET_PCR );
@@ -450,19 +459,42 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
         if ( i >= 0 )
         {
             msg_Dbg( p_demux, "Requesting access to enable stream %d", i );
-            i_ret = stream_Control( p_demux->s, STREAM_SET_PRIVATE_ID_STATE, i, true );
+            i_ret = vlc_stream_Control( p_demux->s,
+                                        STREAM_SET_PRIVATE_ID_STATE, i, true );
         }
         else
         {  /* i contains -1 * es_category */
             msg_Dbg( p_demux, "Requesting access to disable stream %d", i );
-            i_ret = stream_Control( p_demux->s, STREAM_SET_PRIVATE_ID_STATE, i, false );
+            i_ret = vlc_stream_Control( p_demux->s,
+                                        STREAM_SET_PRIVATE_ID_STATE, i,
+                                        false );
         }
 
         if ( i_ret == VLC_SUCCESS )
         {
-            SeekPrepare( p_demux );
+            asf_track_t *tk;
+            if( i >= 0 )
+            {
+                tk = p_sys->track[i];
+            }
+            else
+            {
+                for( int j = 0; j < MAX_ASF_TRACKS ; j++ )
+                {
+                    tk = p_sys->track[j];
+                    if( !tk->p_fmt || tk->p_fmt->i_cat != -1 * i )
+                        continue;
+                    if( tk )
+                    {
+                        FlushQueue( tk );
+                        tk->i_time = -1;
+                    }
+                }
+            }
+
             p_sys->i_seek_track = 0;
-            WaitKeyframe( p_demux );
+            if ( ( tk && tk->i_cat == VIDEO_ES ) || i == -1 * VIDEO_ES )
+                WaitKeyframe( p_demux );
         }
         return i_ret;
     }
@@ -768,7 +800,8 @@ static int DemuxInit( demux_t *p_demux )
     p_sys->meta         = NULL;
 
     /* Now load all object ( except raw data ) */
-    stream_Control( p_demux->s, STREAM_CAN_FASTSEEK, &p_sys->b_canfastseek );
+    vlc_stream_Control( p_demux->s, STREAM_CAN_FASTSEEK,
+                        &p_sys->b_canfastseek );
     if( !(p_sys->p_root = ASF_ReadObjectRoot(p_demux->s, p_sys->b_canfastseek)) )
     {
         msg_Warn( p_demux, "ASF plugin discarded (not a valid file)" );
@@ -789,8 +822,8 @@ static int DemuxInit( demux_t *p_demux )
          || ASF_FindObject( p_sys->p_root->p_hdr,
                          &asf_object_advanced_content_encryption_guid, 0 ) != NULL )
     {
-        dialog_Fatal( p_demux, _("Could not demux ASF stream"), "%s",
-                        _("DRM protected streams are not supported.") );
+        vlc_dialog_display_error( p_demux, _("Could not demux ASF stream"), "%s",
+            ("DRM protected streams are not supported.") );
         goto error;
     }
 
@@ -824,6 +857,14 @@ static int DemuxInit( demux_t *p_demux )
         ASF_fillup_es_bitrate_priorities_ex( p_sys, p_hdr_ext, &fmt_priorities_bitrate_ex );
     }
 
+    const bool b_mms = !strncmp( p_demux->psz_access, "mms", 3 );
+
+    if( b_mms )
+    {
+        es_out_Control( p_demux->out, ES_OUT_SET_ES_CAT_POLICY,
+                        VIDEO_ES, ES_OUT_ES_POLICY_EXCLUSIVE );
+    }
+
     for( unsigned i_stream = 0; i_stream < p_sys->i_track; i_stream++ )
     {
         asf_track_t    *tk;
@@ -844,14 +885,16 @@ static int DemuxInit( demux_t *p_demux )
         tk->p_es = NULL;
         tk->info.p_esp = NULL;
         tk->info.p_frame = NULL;
+        tk->info.i_cat = UNKNOWN_ES;
         tk->queue.p_first = NULL;
         tk->queue.pp_last = &tk->queue.p_first;
 
-        if ( strncmp( p_demux->psz_access, "mms", 3 ) )
+        if ( !b_mms )
         {
             /* Check (not mms) if this track is selected (ie will receive data) */
-            if( !stream_Control( p_demux->s, STREAM_GET_PRIVATE_ID_STATE,
-                                 (int) p_sp->i_stream_number, &b_access_selected ) &&
+            if( !vlc_stream_Control( p_demux->s, STREAM_GET_PRIVATE_ID_STATE,
+                                     (int) p_sp->i_stream_number,
+                                     &b_access_selected ) &&
                 !b_access_selected )
             {
                 tk->i_cat = UNKNOWN_ES;
@@ -932,6 +975,8 @@ static int DemuxInit( demux_t *p_demux )
                                                      UINT_MAX, uint32_t );
             GET_CHECKED( fmt.video.i_height,     GetDWLE( p_data + 8 ),
                                                      UINT_MAX, uint32_t );
+            fmt.video.i_visible_width = fmt.video.i_width;
+            fmt.video.i_visible_height = fmt.video.i_height;
 
             if( p_esp && p_esp->i_average_time_per_frame > 0 )
             {
@@ -1054,7 +1099,7 @@ static int DemuxInit( demux_t *p_demux )
             es_format_Init( &fmt, UNKNOWN_ES, 0 );
         }
 
-        tk->i_cat = fmt.i_cat;
+        tk->i_cat = tk->info.i_cat = fmt.i_cat;
         if( fmt.i_cat != UNKNOWN_ES )
         {
             if( p_esp && p_languages &&
@@ -1103,8 +1148,9 @@ static int DemuxInit( demux_t *p_demux )
 
             tk->p_es = es_out_Add( p_demux->out, &fmt );
 
-            if( !stream_Control( p_demux->s, STREAM_GET_PRIVATE_ID_STATE,
-                                 (int) p_sp->i_stream_number, &b_access_selected ) &&
+            if( !vlc_stream_Control( p_demux->s, STREAM_GET_PRIVATE_ID_STATE,
+                                     (int) p_sp->i_stream_number,
+                                     &b_access_selected ) &&
                 b_access_selected )
             {
                 p_sys->i_access_selected_track[fmt.i_cat] = p_sp->i_stream_number;
@@ -1136,7 +1182,7 @@ static int DemuxInit( demux_t *p_demux )
     }
 
     /* go to first packet */
-    stream_Seek( p_demux->s, p_sys->i_data_begin );
+    vlc_stream_Seek( p_demux->s, p_sys->i_data_begin );
 
     /* try to calculate movie time */
     if( p_sys->p_fp->i_data_packets_count > 0 )
@@ -1194,6 +1240,34 @@ static int DemuxInit( demux_t *p_demux )
             vlc_meta_SetRating( p_sys->meta, p_cd->psz_rating );
         }
     }
+    asf_object_extended_content_description_t *p_ecd;
+    if( ( p_ecd = ASF_FindObject( p_sys->p_root->p_hdr,
+                                 &asf_object_extended_content_description, 0 ) ) )
+    {
+        for( int i = 0; i < p_ecd->i_count; i++ )
+        {
+
+#define set_meta( name, vlc_type ) \
+            if( !strncmp( p_ecd->ppsz_name[i], name, strlen(name) ) ) \
+                vlc_meta_Set( p_sys->meta, vlc_type, p_ecd->ppsz_value[i] );
+
+            set_meta( "WM/AlbumTitle",   vlc_meta_Album )
+            else set_meta( "WM/TrackNumber",  vlc_meta_TrackNumber )
+            else set_meta( "WM/Year",         vlc_meta_Date )
+            else set_meta( "WM/Genre",        vlc_meta_Genre )
+            else set_meta( "WM/Genre",        vlc_meta_Genre )
+            else set_meta( "WM/AlbumArtist",  vlc_meta_Artist )
+            else set_meta( "WM/Publisher",    vlc_meta_Publisher )
+            else if( p_ecd->ppsz_value[i] != NULL &&
+                    *p_ecd->ppsz_value[i] != '\0' && /* no empty value */
+                    *p_ecd->ppsz_value[i] != '{'  && /* no guid value */
+                    *p_ecd->ppsz_name[i] != '{' )    /* no guid name */
+                    vlc_meta_AddExtra( p_sys->meta, p_ecd->ppsz_name[i], p_ecd->ppsz_value[i] );
+            /* TODO map WM/Composer, WM/Provider, WM/PartOfSet, PeakValue, AverageLevel  */
+#undef set_meta
+        }
+    }
+
     /// \tood Fix Child meta for ASF tracks
 #if 0
     for( i_stream = 0, i = 0; i < MAX_ASF_TRACKS; i++ )
@@ -1239,6 +1313,20 @@ error:
 /*****************************************************************************
  * FlushQueues: flushes tail packets and send queues
  *****************************************************************************/
+static void FlushQueue( asf_track_t *tk )
+{
+    if( tk->info.p_frame )
+    {
+        block_ChainRelease( tk->info.p_frame );
+        tk->info.p_frame = NULL;
+    }
+    if( tk->queue.p_first )
+    {
+        block_ChainRelease( tk->queue.p_first );
+        tk->queue.p_first = NULL;
+        tk->queue.pp_last = &tk->queue.p_first;
+    }
+}
 
 static void FlushQueues( demux_t *p_demux )
 {
@@ -1248,17 +1336,7 @@ static void FlushQueues( demux_t *p_demux )
         asf_track_t *tk = p_sys->track[i];
         if( !tk )
             continue;
-        if( tk->info.p_frame )
-        {
-            block_ChainRelease( tk->info.p_frame );
-            tk->info.p_frame = NULL;
-        }
-        if( tk->queue.p_first )
-        {
-            block_ChainRelease( tk->queue.p_first );
-            tk->queue.p_first = NULL;
-            tk->queue.pp_last = &tk->queue.p_first;
-        }
+        FlushQueue( tk );
     }
 }
 

@@ -1,4 +1,5 @@
 noinst_LTLIBRARIES =
+pkglib_LTLIBRARIES =
 noinst_HEADERS =
 check_PROGRAMS =
 EXTRA_DIST =
@@ -20,6 +21,7 @@ EXTRA_LTLIBRARIES =
 
 include common.am
 include access/Makefile.am
+include access/http/Makefile.am
 include access/rtp/Makefile.am
 include arm_neon/Makefile.am
 include audio_filter/Makefile.am
@@ -30,6 +32,7 @@ include control/Makefile.am
 include demux/Makefile.am
 include gui/Makefile.am
 include hw/vdpau/Makefile.am
+include keystore/Makefile.am
 include logger/Makefile.am
 include lua/Makefile.am
 include meta_engine/Makefile.am
@@ -37,7 +40,9 @@ include misc/Makefile.am
 include notify/Makefile.am
 include packetizer/Makefile.am
 include services_discovery/Makefile.am
+include spu/Makefile.am
 include stream_filter/Makefile.am
+include stream_extractor/Makefile.am
 include text_renderer/Makefile.am
 include video_chroma/Makefile.am
 include video_filter/Makefile.am
@@ -68,7 +73,6 @@ module.rc.lo: module.rc
 		--include-dir $(top_srcdir)/share \
 		--include-dir $(top_srcdir)/extras/package/win32 \
 		-i $< -o $@
-	echo HELLO
 endif
 
 # Wayland

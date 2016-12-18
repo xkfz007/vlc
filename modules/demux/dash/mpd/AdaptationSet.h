@@ -29,7 +29,7 @@
 #include <string>
 #include <map>
 
-#include "../adaptative/playlist/BaseAdaptationSet.h"
+#include "../adaptive/playlist/BaseAdaptationSet.h"
 #include "DASHCommonAttributesElements.h"
 
 namespace dash
@@ -39,16 +39,18 @@ namespace dash
         class Period;
         class Representation;
 
-        class AdaptationSet : public adaptative::playlist::BaseAdaptationSet,
+        using namespace adaptive;
+
+        class AdaptationSet : public adaptive::playlist::BaseAdaptationSet,
                               public DASHCommonAttributesElements
         {
             public:
                 AdaptationSet(Period *);
                 virtual ~AdaptationSet();
 
+                virtual StreamFormat            getStreamFormat() const; /* reimpl */
                 bool                            getSubsegmentAlignmentFlag() const;
                 void                            setSubsegmentAlignmentFlag( bool alignment );
-                const Representation*           getRepresentationById   ( const std::string &id ) const;
 
             private:
                 bool                            subsegmentAlignmentFlag;

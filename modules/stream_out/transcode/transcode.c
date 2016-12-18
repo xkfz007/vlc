@@ -131,6 +131,9 @@
 #define HP_LONGTEXT N_( \
     "Runs the optional encoder thread at the OUTPUT priority instead of " \
     "VIDEO." )
+#define POOL_TEXT N_("Picture pool size")
+#define POOL_LONGTEXT N_( "Defines how many pictures we allow to be in pool "\
+    "between decoder/encoder threads when threads > 0" )
 
 
 static const char *const ppsz_deinterlace_type[] =
@@ -177,7 +180,7 @@ vlc_module_begin ()
                  MAXWIDTH_LONGTEXT, true )
     add_integer( SOUT_CFG_PREFIX "maxheight", 0, MAXHEIGHT_TEXT,
                  MAXHEIGHT_LONGTEXT, true )
-    add_module_list( SOUT_CFG_PREFIX "vfilter", "video filter2",
+    add_module_list( SOUT_CFG_PREFIX "vfilter", "video filter",
                      NULL, VFILTER_TEXT, VFILTER_LONGTEXT, false )
 
     set_section( N_("Audio"), NULL )
@@ -206,7 +209,7 @@ vlc_module_begin ()
                 SCODEC_LONGTEXT, false )
     add_bool( SOUT_CFG_PREFIX "soverlay", false, SCODEC_TEXT,
                SCODEC_LONGTEXT, false )
-    add_module_list( SOUT_CFG_PREFIX "sfilter", "video filter",
+    add_module_list( SOUT_CFG_PREFIX "sfilter", "spu source",
                      NULL, SFILTER_TEXT, SFILTER_LONGTEXT, false )
 
     set_section( N_("On Screen Display"), NULL )
@@ -216,6 +219,8 @@ vlc_module_begin ()
     set_section( N_("Miscellaneous"), NULL )
     add_integer( SOUT_CFG_PREFIX "threads", 0, THREADS_TEXT,
                  THREADS_LONGTEXT, true )
+    add_integer( SOUT_CFG_PREFIX "pool-size", 10, POOL_TEXT, POOL_LONGTEXT, true )
+        change_integer_range( 1, 1000 )
     add_bool( SOUT_CFG_PREFIX "high-priority", false, HP_TEXT, HP_LONGTEXT,
               true )
 
@@ -226,7 +231,7 @@ static const char *const ppsz_sout_options[] = {
     "scale", "fps", "width", "height", "vfilter", "deinterlace",
     "deinterlace-module", "threads", "aenc", "acodec", "ab", "alang",
     "afilter", "samplerate", "channels", "senc", "scodec", "soverlay",
-    "sfilter", "osd", "high-priority", "maxwidth", "maxheight",
+    "sfilter", "osd", "high-priority", "maxwidth", "maxheight", "pool-size",
     NULL
 };
 
@@ -358,22 +363,18 @@ static int Open( vlc_object_t *p_this )
         p_sys->psz_vf2 = NULL;
     free( psz_string );
 
-    p_sys->b_deinterlace = var_GetBool( p_stream, SOUT_CFG_PREFIX "deinterlace" );
+    if( var_GetBool( p_stream, SOUT_CFG_PREFIX "deinterlace" ) )
+        psz_string = var_GetString( p_stream,
+                                    SOUT_CFG_PREFIX "deinterlace-module" );
+    else
+        psz_string = NULL;
 
-    psz_string = var_GetString( p_stream, SOUT_CFG_PREFIX "deinterlace-module" );
-    p_sys->psz_deinterlace = NULL;
-    p_sys->p_deinterlace_cfg = NULL;
-    if( psz_string && *psz_string )
-    {
-        char *psz_next;
-        psz_next = config_ChainCreate( &p_sys->psz_deinterlace,
-                                   &p_sys->p_deinterlace_cfg,
-                                   psz_string );
-        free( psz_next );
-    }
+    free( config_ChainCreate( &p_sys->psz_deinterlace,
+                              &p_sys->p_deinterlace_cfg, psz_string ) );
     free( psz_string );
 
     p_sys->i_threads = var_GetInteger( p_stream, SOUT_CFG_PREFIX "threads" );
+    p_sys->pool_size = var_GetInteger( p_stream, SOUT_CFG_PREFIX "pool-size" );
     p_sys->b_high_priority = var_GetBool( p_stream, SOUT_CFG_PREFIX "high-priority" );
 
     if( p_sys->i_vcodec )
@@ -382,6 +383,12 @@ static int Open( vlc_object_t *p_this )
                  (char *)&p_sys->i_vcodec, p_sys->i_width, p_sys->i_height,
                  p_sys->f_scale, p_sys->i_vbitrate / 1000 );
     }
+
+    /* Disable hardware decoding by default (unlike normal playback) */
+    psz_string = var_CreateGetString( p_stream, "avcodec-hw" );
+    if( !strcasecmp( "any", psz_string ) )
+        var_SetString( p_stream, "avcodec-hw", "none" );
+    free( psz_string );
 
     /* Subpictures transcoding parameters */
     p_sys->p_spu = NULL;
@@ -518,7 +525,7 @@ static sout_stream_id_sys_t *Add( sout_stream_t *p_stream,
         goto error;
     id->p_decoder->p_module = NULL;
     id->p_decoder->fmt_in = *p_fmt;
-    id->p_decoder->b_pace_control = true;
+    id->p_decoder->b_frame_drop_allowed = false;
 
     /* Create encoder object */
     id->p_encoder = sout_EncoderCreate( p_stream );

@@ -41,7 +41,7 @@
 #include <vlc_filter.h>
 #include <vlc_modules.h>
 
-#include "../video_filter/mosaic.h"
+#include "../spu/mosaic.h"
 
 /*****************************************************************************
  * Local structures
@@ -151,7 +151,7 @@ vlc_module_begin ()
     add_string( CFG_PREFIX "chroma", NULL, CHROMA_TEXT, CHROMA_LONGTEXT,
                 false )
 
-    add_module_list( CFG_PREFIX "vfilter", "video filter2",
+    add_module_list( CFG_PREFIX "vfilter", "video filter",
                      NULL, VFILTER_TEXT, VFILTER_LONGTEXT, false )
 
     add_integer_with_range( CFG_PREFIX "alpha", 255, 0, 255,
@@ -286,7 +286,7 @@ static sout_stream_id_sys_t * Add( sout_stream_t *p_stream, const es_format_t *p
         return NULL;
     p_sys->p_decoder->p_module = NULL;
     p_sys->p_decoder->fmt_in = *p_fmt;
-    p_sys->p_decoder->b_pace_control = false;
+    p_sys->p_decoder->b_frame_drop_allowed = true;
     p_sys->p_decoder->fmt_out = p_sys->p_decoder->fmt_in;
     p_sys->p_decoder->fmt_out.i_extra = 0;
     p_sys->p_decoder->fmt_out.p_extra = 0;
@@ -328,7 +328,7 @@ static sout_stream_id_sys_t * Add( sout_stream_t *p_stream, const es_format_t *p
     p_bridge = GetBridge( p_stream );
     if ( p_bridge == NULL )
     {
-        vlc_object_t *p_libvlc = VLC_OBJECT( p_stream->p_libvlc );
+        vlc_object_t *p_libvlc = VLC_OBJECT( p_stream->obj.libvlc );
         vlc_value_t val;
 
         p_bridge = xmalloc( sizeof( bridge_t ) );
@@ -463,7 +463,7 @@ static void Del( sout_stream_t *p_stream, sout_stream_id_sys_t *id )
 
     if ( b_last_es )
     {
-        vlc_object_t *p_libvlc = VLC_OBJECT( p_stream->p_libvlc );
+        vlc_object_t *p_libvlc = VLC_OBJECT( p_stream->obj.libvlc );
         for ( i = 0; i < p_bridge->i_es_num; i++ )
             free( p_bridge->pp_es[i] );
         free( p_bridge->pp_es );

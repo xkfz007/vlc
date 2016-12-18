@@ -26,8 +26,8 @@
 #define DASHREPRESENTATION_H_
 
 #include "DASHCommonAttributesElements.h"
-#include "../adaptative/playlist/SegmentInfoCommon.h"
-#include "../adaptative/playlist/BaseRepresentation.h"
+#include "../adaptive/playlist/SegmentInfoCommon.h"
+#include "../adaptive/playlist/BaseRepresentation.h"
 
 namespace dash
 {
@@ -37,16 +37,17 @@ namespace dash
         class TrickModeType;
         class MPD;
 
-        using namespace adaptative::playlist;
+        using namespace adaptive;
+        using namespace adaptive::playlist;
 
         class Representation : public BaseRepresentation,
-                               public DASHCommonAttributesElements,
-                               public UniqueNess<Representation>
+                               public DASHCommonAttributesElements
         {
             public:
-                Representation( AdaptationSet *, MPD *mpd );
+                Representation( AdaptationSet * );
                 virtual ~Representation ();
 
+                virtual StreamFormat getStreamFormat() const; /* reimpl */
                 int                 getQualityRanking       () const;
                 void                setQualityRanking       ( int qualityRanking );
                 const std::list<const Representation*>&     getDependencies() const;
@@ -65,14 +66,12 @@ namespace dash
                                                   const BaseSegmentTemplate *) const; // reimpl
 
             private:
-                MPD                                *mpd;
                 int                                 qualityRanking;
                 std::list<const Representation*>    dependencies;
                 TrickModeType                       *trickModeType;
 
                 /* for contextualize() */
-                mtime_t getScaledTimeBySegmentNumber(size_t, const MediaSegmentTemplate *) const;
-                size_t getSegmentNumber(size_t, const MediaSegmentTemplate *) const;
+                mtime_t getScaledTimeBySegmentNumber(uint64_t, const MediaSegmentTemplate *) const;
         };
     }
 }

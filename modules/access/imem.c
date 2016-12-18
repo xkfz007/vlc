@@ -200,7 +200,7 @@ typedef void (*imem_release_t)(void *data, const char *cookie, size_t, void *);
  *****************************************************************************/
 
 /* */
-static block_t *Block(access_t *);
+static block_t *Block(access_t *, bool *);
 static int ControlAccess(access_t *, int, va_list);
 
 static int Demux(demux_t *);
@@ -275,7 +275,8 @@ static int OpenCommon(vlc_object_t *object, imem_sys_t **sys_ptr, const char *ps
     sys->source.cookie = var_InheritString(object, "imem-cookie");
 
     msg_Dbg(object, "Using get(%p), release(%p), data(%p), cookie(%s)",
-            sys->source.get, sys->source.release, sys->source.data,
+            (void *)sys->source.get, (void *)sys->source.release,
+            sys->source.data,
             sys->source.cookie ? sys->source.cookie : "(null)");
 
     /* */
@@ -303,7 +304,6 @@ static int OpenAccess(vlc_object_t *object)
     }
 
     /* */
-    access_InitFields(access);
     access->pf_control = ControlAccess;
     access->pf_read    = NULL;
     access->pf_block   = Block;
@@ -331,29 +331,29 @@ static int ControlAccess(access_t *access, int i_query, va_list args)
     (void) access;
     switch (i_query)
     {
-    case ACCESS_CAN_SEEK:
-    case ACCESS_CAN_FASTSEEK: {
+    case STREAM_CAN_SEEK:
+    case STREAM_CAN_FASTSEEK: {
         bool *b = va_arg( args, bool* );
         *b = false;
         return VLC_SUCCESS;
     }
-    case ACCESS_CAN_PAUSE:
-    case ACCESS_CAN_CONTROL_PACE: {
+    case STREAM_CAN_PAUSE:
+    case STREAM_CAN_CONTROL_PACE: {
         bool *b = va_arg( args, bool* );
         *b = true;
         return VLC_SUCCESS;
     }
-    case ACCESS_GET_SIZE: {
+    case STREAM_GET_SIZE: {
         uint64_t *s = va_arg(args, uint64_t *);
         *s = var_InheritInteger(access, "imem-size");
-        return VLC_SUCCESS;
+        return *s ? VLC_SUCCESS : VLC_EGENERIC;
     }
-    case ACCESS_GET_PTS_DELAY: {
+    case STREAM_GET_PTS_DELAY: {
         int64_t *delay = va_arg(args, int64_t *);
         *delay = DEFAULT_PTS_DELAY; /* FIXME? */
         return VLC_SUCCESS;
     }
-    case ACCESS_SET_PAUSE_STATE:
+    case STREAM_SET_PAUSE_STATE:
         return VLC_SUCCESS;
 
     default:
@@ -365,7 +365,7 @@ static int ControlAccess(access_t *access, int i_query, va_list args)
  * It retreives data using the get() callback, copies them,
  * and then release them using the release() callback.
  */
-static block_t *Block(access_t *access)
+static block_t *Block(access_t *access, bool *restrict eof)
 {
     imem_sys_t *sys = (imem_sys_t*)access->p_sys;
 
@@ -375,7 +375,7 @@ static block_t *Block(access_t *access)
 
     if (sys->source.get(sys->source.data, sys->source.cookie,
                         NULL, NULL, &flags, &buffer_size, &buffer)) {
-        access->info.b_eof = true;
+        *eof = true;
         return NULL;
     }
 

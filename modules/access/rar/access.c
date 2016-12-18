@@ -40,6 +40,7 @@ struct access_sys_t {
     stream_t               *s;
     rar_file_t             *file;
     const rar_file_chunk_t *chunk;
+    uint64_t                position;
 };
 
 static int Seek(access_t *access, uint64_t position)
@@ -49,6 +50,7 @@ static int Seek(access_t *access, uint64_t position)
 
     if (position > file->real_size)
         position = file->real_size;
+    sys->position = position;
 
     /* Search the chunk */
     const rar_file_chunk_t *old_chunk = sys->chunk;
@@ -57,45 +59,41 @@ static int Seek(access_t *access, uint64_t position)
         if (position < sys->chunk->cummulated_size + sys->chunk->size)
             break;
     }
-    access->info.i_pos = position;
-    access->info.b_eof = false;
 
     const uint64_t offset = sys->chunk->offset +
                             (position - sys->chunk->cummulated_size);
 
     if (strcmp(old_chunk->mrl, sys->chunk->mrl)) {
         if (sys->s)
-            stream_Delete(sys->s);
-        sys->s = stream_UrlNew(access, sys->chunk->mrl);
+            vlc_stream_Delete(sys->s);
+        sys->s = vlc_stream_NewURL(access, sys->chunk->mrl);
     }
-    return sys->s ? stream_Seek(sys->s, offset) : VLC_EGENERIC;
+    return sys->s ? vlc_stream_Seek(sys->s, offset) : VLC_EGENERIC;
 }
 
-static ssize_t Read(access_t *access, uint8_t *data, size_t size)
+static ssize_t Read(access_t *access, void *data, size_t size)
 {
     access_sys_t *sys = access->p_sys;
 
     size_t total = 0;
     while (total < size) {
         const uint64_t chunk_end = sys->chunk->cummulated_size + sys->chunk->size;
-        int max = __MIN(__MIN((int64_t)(size - total), (int64_t)(chunk_end - access->info.i_pos)), INT_MAX);
+        int max = __MIN(__MIN((int64_t)(size - total), (int64_t)(chunk_end - sys->position)), INT_MAX);
         if (max <= 0)
             break;
 
-        int r = sys->s ? stream_Read(sys->s, data, max) : -1;
+        int r = sys->s ? vlc_stream_Read(sys->s, data, max) : -1;
         if (r <= 0)
             break;
 
         total += r;
         if( data )
-            data += r;
-        access->info.i_pos += r;
-        if (access->info.i_pos >= chunk_end &&
-            Seek(access, access->info.i_pos))
+            data = ((char *)data) + r;
+        sys->position += r;
+        if (sys->position >= chunk_end &&
+            Seek(access, sys->position))
             break;
     }
-    if (size > 0 && total <= 0)
-        access->info.b_eof = true;
     return total;
 
 }
@@ -108,30 +106,30 @@ static int Control(access_t *access, int query, va_list args)
         return VLC_EGENERIC;
 
     switch (query) {
-    case ACCESS_CAN_SEEK: {
+    case STREAM_CAN_SEEK: {
         bool *b = va_arg(args, bool *);
-        return stream_Control(s, STREAM_CAN_SEEK, b);
+        return vlc_stream_Control(s, STREAM_CAN_SEEK, b);
     }
-    case ACCESS_CAN_FASTSEEK: {
+    case STREAM_CAN_FASTSEEK: {
         bool *b = va_arg(args, bool *);
-        return stream_Control(s, STREAM_CAN_FASTSEEK, b);
+        return vlc_stream_Control(s, STREAM_CAN_FASTSEEK, b);
     }
     /* FIXME the following request should ask the underlying access object */
-    case ACCESS_CAN_PAUSE:
-    case ACCESS_CAN_CONTROL_PACE: {
+    case STREAM_CAN_PAUSE:
+    case STREAM_CAN_CONTROL_PACE: {
         bool *b = va_arg(args, bool *);
         *b = true;
         return VLC_SUCCESS;
     }
-    case ACCESS_GET_SIZE:
+    case STREAM_GET_SIZE:
         *va_arg(args, uint64_t *) = sys->file->size;
         return VLC_SUCCESS;
-    case ACCESS_GET_PTS_DELAY: {
+    case STREAM_GET_PTS_DELAY: {
         int64_t *delay = va_arg(args, int64_t *);
         *delay = DEFAULT_PTS_DELAY;
         return VLC_SUCCESS;
     }
-    case ACCESS_SET_PAUSE_STATE:
+    case STREAM_SET_PAUSE_STATE:
         return VLC_SUCCESS;
 
     default:
@@ -143,17 +141,18 @@ int RarAccessOpen(vlc_object_t *object)
 {
     access_t *access = (access_t*)object;
 
-    if (!strchr(access->psz_location, '|'))
+    const char *name = strchr(access->psz_location, '|');
+    if (name == NULL)
         return VLC_EGENERIC;
 
-    char *base = strdup(access->psz_location);
-    if (!base)
-        return VLC_EGENERIC;
-    char *name = strchr(base, '|');
-    *name++ = '\0';
-    decode_URI(base);
+    char *base = strndup(access->psz_location, name - access->psz_location);
+    if (unlikely(base == NULL))
+        return VLC_ENOMEM;
 
-    stream_t *s = stream_UrlNew(access, base);
+    name++;
+    vlc_uri_decode(base);
+
+    stream_t *s = vlc_stream_NewURL(access, base);
     if (!s || RarProbe(s))
         goto error;
 
@@ -168,7 +167,7 @@ int RarAccessOpen(vlc_object_t *object)
             || newscheme.filescount < 1 || newscheme.i_nbvols < 2 )
     {
         /* We might want to lookup old naming scheme, could be a part1.rar,part1.r00 */
-        stream_Seek(s, 0);
+        vlc_stream_Seek(s, 0);
         RarParse(s, &oldscheme.filescount, &oldscheme.files, &oldscheme.i_nbvols, true);
     }
 
@@ -220,8 +219,6 @@ int RarAccessOpen(vlc_object_t *object)
     access->pf_control = Control;
     access->pf_seek    = Seek;
 
-    access_InitFields(access);
-
     rar_file_chunk_t dummy = {
         .mrl = base,
     };
@@ -233,7 +230,7 @@ int RarAccessOpen(vlc_object_t *object)
 
 error:
     if (s)
-        stream_Delete(s);
+        vlc_stream_Delete(s);
     free(base);
     return VLC_EGENERIC;
 }
@@ -244,7 +241,7 @@ void RarAccessClose(vlc_object_t *object)
     access_sys_t *sys = access->p_sys;
 
     if (sys->s)
-        stream_Delete(sys->s);
+        vlc_stream_Delete(sys->s);
     RarFileDelete(sys->file);
     free(sys);
 }

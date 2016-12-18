@@ -26,19 +26,14 @@
 #define VLC_VARIABLES_H 1
 
 /**
- * \file
- * This file defines functions and structures for dynamic variables in vlc
- */
-
-/**
  * \defgroup variables Variables
+ * \ingroup vlc_object
  *
- * Functions for using the object variables in vlc.
- *
- * Vlc have a very powerful "object variable" infrastructure useful
- * for many things.
+ * VLC object variables and callbacks
  *
  * @{
+ * \file
+ * VLC object variables and callbacks interface
  */
 
 #define VLC_VAR_TYPE      0x00ff
@@ -54,7 +49,6 @@
 #define VLC_VAR_BOOL      0x0020
 #define VLC_VAR_INTEGER   0x0030
 #define VLC_VAR_STRING    0x0040
-#define VLC_VAR_VARIABLE  0x0044
 #define VLC_VAR_FLOAT     0x0050
 #define VLC_VAR_ADDRESS   0x0070
 #define VLC_VAR_COORDS    0x00A0
@@ -66,9 +60,6 @@
  * @{
  */
 #define VLC_VAR_HASCHOICE 0x0100
-#define VLC_VAR_HASMIN    0x0200
-#define VLC_VAR_HASMAX    0x0400
-#define VLC_VAR_HASSTEP   0x0800
 
 #define VLC_VAR_ISCOMMAND 0x2000
 
@@ -86,18 +77,6 @@
  * @{
  */
 
-/**
- * Set the minimum value of this variable
- * \param p_val The new minimum value
- * \param p_val2 Unused
- */
-#define VLC_VAR_SETMIN              0x0010
-/**
- * Set the maximum value of this variable
- * \param p_val The new maximum value
- * \param p_val2 Unused
- */
-#define VLC_VAR_SETMAX              0x0011
 #define VLC_VAR_SETSTEP             0x0012
 
 /**
@@ -117,10 +96,10 @@
 #define VLC_VAR_ADDCHOICE           0x0020
 #define VLC_VAR_DELCHOICE           0x0021
 #define VLC_VAR_CLEARCHOICES        0x0022
-#define VLC_VAR_SETDEFAULT          0x0023
 #define VLC_VAR_GETCHOICES          0x0024
 
 #define VLC_VAR_CHOICESCOUNT        0x0026
+#define VLC_VAR_SETMINMAX           0x0027
 
 /**@}*/
 
@@ -142,7 +121,7 @@ enum {
 VLC_API int var_Create( vlc_object_t *, const char *, int );
 #define var_Create(a,b,c) var_Create( VLC_OBJECT(a), b, c )
 
-VLC_API int var_Destroy( vlc_object_t *, const char * );
+VLC_API void var_Destroy( vlc_object_t *, const char * );
 #define var_Destroy(a,b) var_Destroy( VLC_OBJECT(a), b )
 
 VLC_API int var_Change( vlc_object_t *, const char *, int, vlc_value_t *, vlc_value_t * );
@@ -177,12 +156,12 @@ VLC_API void var_FreeList( vlc_value_t *, vlc_value_t * );
  *                 vlc_value_t newvalue,
  *                 void *p_data);
  *****************************************************************************/
-VLC_API int var_AddCallback( vlc_object_t *, const char *, vlc_callback_t, void * );
-VLC_API int var_DelCallback( vlc_object_t *, const char *, vlc_callback_t, void * );
-VLC_API int var_TriggerCallback( vlc_object_t *, const char * );
+VLC_API void var_AddCallback( vlc_object_t *, const char *, vlc_callback_t, void * );
+VLC_API void var_DelCallback( vlc_object_t *, const char *, vlc_callback_t, void * );
+VLC_API void var_TriggerCallback( vlc_object_t *, const char * );
 
-VLC_API int var_AddListCallback( vlc_object_t *, const char *, vlc_list_callback_t, void * );
-VLC_API int var_DelListCallback( vlc_object_t *, const char *, vlc_list_callback_t, void * );
+VLC_API void var_AddListCallback( vlc_object_t *, const char *, vlc_list_callback_t, void * );
+VLC_API void var_DelListCallback( vlc_object_t *, const char *, vlc_list_callback_t, void * );
 
 #define var_AddCallback(a,b,c,d) var_AddCallback( VLC_OBJECT(a), b, c, d )
 #define var_DelCallback(a,b,c,d) var_DelCallback( VLC_OBJECT(a), b, c, d )

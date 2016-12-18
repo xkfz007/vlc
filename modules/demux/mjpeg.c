@@ -98,7 +98,7 @@ static bool Peek( demux_t *p_demux, bool b_first )
     {
         p_sys->i_frame_size_estimate += 5120;
     }
-    i_data = stream_Peek( p_demux->s, &p_sys->p_peek,
+    i_data = vlc_stream_Peek( p_demux->s, &p_sys->p_peek,
                           p_sys->i_frame_size_estimate );
     if( i_data == p_sys->i_data_peeked )
     {
@@ -262,7 +262,7 @@ static int SendBlock( demux_t *p_demux, int i )
     demux_sys_t *p_sys = p_demux->p_sys;
     block_t     *p_block;
 
-    if( ( p_block = stream_Block( p_demux->s, i ) ) == NULL )
+    if( ( p_block = vlc_stream_Block( p_demux->s, i ) ) == NULL )
     {
         msg_Warn( p_demux, "cannot read data" );
         return 0;
@@ -298,7 +298,7 @@ static int Open( vlc_object_t * p_this )
     int         i_size;
     bool        b_matched = false;
 
-    if( IsMxpeg( p_demux->s ) && !p_demux->b_force )
+    if( IsMxpeg( p_demux->s ) && !p_demux->obj.force )
         // let avformat handle this case
         return VLC_EGENERIC;
 
@@ -322,14 +322,14 @@ static int Open( vlc_object_t * p_this )
         char* boundary = strstr( content_type, "boundary=" );
         if( boundary )
         {
-	    boundary += strlen( "boundary=" );
-	    size_t len = strlen( boundary );
-	    if( len > 2 && boundary[0] == '"'
-	        && boundary[len-1] == '"' )
-	    {
-	        boundary[len-1] = '\0';
-	        boundary++;
-	    }
+            boundary += strlen( "boundary=" );
+            size_t len = strlen( boundary );
+            if( len > 2 && boundary[0] == '"'
+                && boundary[len-1] == '"' )
+            {
+                boundary[len-1] = '\0';
+                boundary++;
+            }
             p_sys->psz_separator = strdup( boundary );
             if( !p_sys->psz_separator )
             {
@@ -344,7 +344,7 @@ static int Open( vlc_object_t * p_this )
     if( b_matched )
     {
         p_demux->pf_demux = MimeDemux;
-        stream_Read( p_demux->s, NULL, i_size );
+        vlc_stream_Read( p_demux->s, NULL, i_size );
     }
     else if( i_size == 0 )
     {
@@ -462,7 +462,7 @@ static int MimeDemux( demux_t *p_demux )
 
     if( i_size > 0 )
     {
-        if( stream_Read( p_demux->s, NULL, i_size ) != i_size )
+        if( vlc_stream_Read( p_demux->s, NULL, i_size ) != i_size )
             return 0;
     }
     else if( i_size < 0 )
@@ -527,7 +527,7 @@ static int MimeDemux( demux_t *p_demux )
     if( !b_match )
     {
         msg_Err( p_demux, "discard non-JPEG part" );
-        stream_Read( p_demux->s, NULL, i );
+        vlc_stream_Read( p_demux->s, NULL, i );
         return 0;
     }
 

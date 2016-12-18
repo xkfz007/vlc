@@ -1,9 +1,10 @@
 /*****************************************************************************
  * utils.h: shared code between Android vout modules.
  *****************************************************************************
- * Copyright (C) 2014 VLC authors and VideoLAN
+ * Copyright (C) 2014-2015 VLC authors and VideoLAN
  *
  * Authors: Felix Abecassis <felix.abecassis@gmail.com>
+ *          Thomas Guillem <thomas@gllm.fr>
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published by
@@ -24,88 +25,145 @@
 # include "config.h"
 #endif
 
-#include <android/native_window.h>
 #include <jni.h>
+#include <android/native_window.h>
 #include <android/native_window_jni.h>
 #include <android/input.h>
 
 #include <vlc_vout_display.h>
+#include <vlc_common.h>
 
-typedef ANativeWindow* (*ptr_ANativeWindow_fromSurface)(JNIEnv*, jobject);
-typedef void (*ptr_ANativeWindow_release)(ANativeWindow*);
-typedef int32_t (*ptr_ANativeWindow_lock)(ANativeWindow*, ANativeWindow_Buffer*, ARect*);
-typedef void (*ptr_ANativeWindow_unlockAndPost)(ANativeWindow*);
-typedef int32_t (*ptr_ANativeWindow_setBuffersGeometry)(ANativeWindow*, int32_t, int32_t, int32_t);
+typedef struct AWindowHandler AWindowHandler;
 
+enum AWindow_ID {
+    AWindow_Video,
+    AWindow_Subtitles,
+    AWindow_Max,
+};
+
+/**
+ * native_window_api_t. See android/native_window.h in NDK
+ */
 typedef struct
 {
-    ptr_ANativeWindow_fromSurface winFromSurface;
-    ptr_ANativeWindow_release winRelease;
-    ptr_ANativeWindow_lock winLock;
-    ptr_ANativeWindow_unlockAndPost unlockAndPost;
-    ptr_ANativeWindow_setBuffersGeometry setBuffersGeometry;
+    int32_t (*winLock)(ANativeWindow*, ANativeWindow_Buffer*, ARect*);
+    void (*unlockAndPost)(ANativeWindow*);
+    int32_t (*setBuffersGeometry)(ANativeWindow*, int32_t, int32_t, int32_t); /* can be NULL */
 } native_window_api_t;
 
-/* Fill the structure passed as parameter and return a library handle
-   that should be destroyed with dlclose. */
-void *LoadNativeWindowAPI(native_window_api_t *native);
-void Manage(vout_display_t *);
-
-#define PRIV_WINDOW_FORMAT_YV12 0x32315659
-
-static inline int ChromaToAndroidHal(vlc_fourcc_t i_chroma)
-{
-    switch (i_chroma) {
-        case VLC_CODEC_YV12:
-        case VLC_CODEC_I420:
-            return PRIV_WINDOW_FORMAT_YV12;
-        case VLC_CODEC_RGB16:
-            return WINDOW_FORMAT_RGB_565;
-        case VLC_CODEC_RGB32:
-            return WINDOW_FORMAT_RGBX_8888;
-        case VLC_CODEC_RGBA:
-            return WINDOW_FORMAT_RGBA_8888;
-        default:
-            return -1;
-    }
-}
-
+/**
+ * native_window_priv_api_t. See system/core/include/system/window.h in AOSP.
+ */
 typedef struct native_window_priv native_window_priv;
-typedef native_window_priv *(*ptr_ANativeWindowPriv_connect) (void *);
-typedef int (*ptr_ANativeWindowPriv_disconnect) (native_window_priv *);
-typedef int (*ptr_ANativeWindowPriv_setUsage) (native_window_priv *, bool, int );
-typedef int (*ptr_ANativeWindowPriv_setBuffersGeometry) (native_window_priv *, int, int, int );
-typedef int (*ptr_ANativeWindowPriv_getMinUndequeued) (native_window_priv *, unsigned int *);
-typedef int (*ptr_ANativeWindowPriv_getMaxBufferCount) (native_window_priv *, unsigned int *);
-typedef int (*ptr_ANativeWindowPriv_setBufferCount) (native_window_priv *, unsigned int );
-typedef int (*ptr_ANativeWindowPriv_setCrop) (native_window_priv *, int, int, int, int);
-typedef int (*ptr_ANativeWindowPriv_dequeue) (native_window_priv *, void **);
-typedef int (*ptr_ANativeWindowPriv_lock) (native_window_priv *, void *);
-typedef int (*ptr_ANativeWindowPriv_queue) (native_window_priv *, void *);
-typedef int (*ptr_ANativeWindowPriv_cancel) (native_window_priv *, void *);
-typedef int (*ptr_ANativeWindowPriv_lockData) (native_window_priv *, void **, ANativeWindow_Buffer *);
-typedef int (*ptr_ANativeWindowPriv_unlockData) (native_window_priv *, void *, bool b_render);
-typedef int (*ptr_ANativeWindowPriv_setOrientation) (native_window_priv *, int);
+typedef struct
+{
+    native_window_priv *(*connect)(ANativeWindow *);
+    int (*disconnect) (native_window_priv *);
+    int (*setUsage) (native_window_priv *, bool, int );
+    int (*setBuffersGeometry) (native_window_priv *, int, int, int );
+    int (*getMinUndequeued) (native_window_priv *, unsigned int *);
+    int (*getMaxBufferCount) (native_window_priv *, unsigned int *);
+    int (*setBufferCount) (native_window_priv *, unsigned int );
+    int (*setCrop) (native_window_priv *, int, int, int, int);
+    int (*dequeue) (native_window_priv *, void **);
+    int (*lock) (native_window_priv *, void *);
+    int (*queue) (native_window_priv *, void *);
+    int (*cancel) (native_window_priv *, void *);
+    int (*lockData) (native_window_priv *, void **, ANativeWindow_Buffer *);
+    int (*unlockData) (native_window_priv *, void *, bool b_render);
+    int (*setOrientation) (native_window_priv *, int);
+} native_window_priv_api_t;
+
+struct awh_mouse_coords
+{
+    int i_action;
+    int i_button;
+    int i_x;
+    int i_y;
+};
 
 typedef struct
 {
-    ptr_ANativeWindowPriv_connect connect;
-    ptr_ANativeWindowPriv_disconnect disconnect;
-    ptr_ANativeWindowPriv_setUsage setUsage;
-    ptr_ANativeWindowPriv_setBuffersGeometry setBuffersGeometry;
-    ptr_ANativeWindowPriv_getMinUndequeued getMinUndequeued;
-    ptr_ANativeWindowPriv_getMaxBufferCount getMaxBufferCount;
-    ptr_ANativeWindowPriv_setBufferCount setBufferCount;
-    ptr_ANativeWindowPriv_setCrop setCrop;
-    ptr_ANativeWindowPriv_dequeue dequeue;
-    ptr_ANativeWindowPriv_lock lock;
-    ptr_ANativeWindowPriv_lockData lockData;
-    ptr_ANativeWindowPriv_unlockData unlockData;
-    ptr_ANativeWindowPriv_queue queue;
-    ptr_ANativeWindowPriv_cancel cancel;
-    ptr_ANativeWindowPriv_setOrientation setOrientation;
-} native_window_priv_api_t;
+    void (*on_new_window_size)(vout_window_t *wnd, unsigned i_width,
+                               unsigned i_height);
+    void (*on_new_mouse_coords)(vout_window_t *wnd,
+                                const struct awh_mouse_coords *coords);
+} awh_events_t;
 
-/* Fill the structure passed as parameter and return 0 if all symbols are
-   found. Don't need to call dlclose, the lib is already loaded. */
-int LoadNativeWindowPrivAPI(native_window_priv_api_t *native);
+/**
+ * Load a private native window API
+ *
+ * This can be used to access the private ANativeWindow API.
+ * \param api doesn't need to be released
+ * \return 0 on success, -1 on error.
+ */
+int android_loadNativeWindowPrivApi(native_window_priv_api_t *api);
+
+/**
+ * Attach or get a JNIEnv*
+ *
+ * The returned JNIEnv* is created from the android JavaVM attached to the VLC
+ * object var.
+ * \return a valid JNIEnv * or NULL. It doesn't need to be released.
+ */
+JNIEnv *android_getEnv(vlc_object_t *p_obj, const char *psz_thread_name);
+
+/**
+ * Create new AWindowHandler
+ *
+ * This handle allow to access IAWindowNativeHandler jobject attached to the
+ * VLC object var.
+ * \return a valid AWindowHandler * or NULL. It must be released with
+ * AWindowHandler_destroy.
+ */
+AWindowHandler *AWindowHandler_new(vout_window_t *wnd, awh_events_t *p_events);
+void AWindowHandler_destroy(AWindowHandler *p_awh);
+
+/**
+ * Get the public native window API
+ *
+ * Used to access the public ANativeWindow API.
+ * \return a valid native_window_api_t. It doesn't need to be released.
+ */
+native_window_api_t *AWindowHandler_getANativeWindowAPI(AWindowHandler *p_awh);
+
+/**
+ * Get the Video or the Subtitles Android Surface
+ *
+ * \return the surface in a jobject, or NULL. It should be released with
+ * AWindowHandler_releaseANativeWindow() or AWindowHandler_destroy().
+ */
+jobject AWindowHandler_getSurface(AWindowHandler *p_awh, enum AWindow_ID id);
+
+/**
+ * Get the Video or the Subtitles ANativeWindow
+ *
+ * \return a valid ANativeWindow or NULL.It should be released with
+ * AWindowHandler_releaseANativeWindow() or AWindowHandler_destroy.()
+ */
+ANativeWindow *AWindowHandler_getANativeWindow(AWindowHandler *p_awh,
+                                               enum AWindow_ID id);
+
+/**
+ * Release the Video/Subtitles Surface/ANativeWindow
+ */
+void AWindowHandler_releaseANativeWindow(AWindowHandler *p_awh,
+                                         enum AWindow_ID id, bool b_clear);
+/**
+ * Pre-ICS hack of ANativeWindow_setBuffersGeometry
+ *
+ * This function is a fix up of ANativeWindow_setBuffersGeometry that doesn't
+ * work before Android ICS. It configures the Surface from the Android
+ * MainThread via a SurfaceHolder. It returns VLC_SUCCESS if the Surface was
+ * configured (it returns VLC_EGENERIC after Android ICS).
+ */
+int AWindowHandler_setBuffersGeometry(AWindowHandler *p_awh, enum AWindow_ID id,
+                                      int i_width, int i_height, int i_format);
+
+/**
+ * Set the window layout
+ */
+int AWindowHandler_setWindowLayout(AWindowHandler *p_awh,
+                                   int i_width, int i_height,
+                                   int i_visible_width, int i_visible_height,
+                                   int i_sar_num, int i_sar_den);

@@ -172,6 +172,9 @@ void video_format_Setup( video_format_t *p_fmt, vlc_fourcc_t i_chroma,
     case VLC_CODEC_J440:
         p_fmt->i_bits_per_pixel = 16;
         break;
+    case VLC_CODEC_P010:
+        p_fmt->i_bits_per_pixel = 15;
+        break;
     case VLC_CODEC_I411:
     case VLC_CODEC_YV12:
     case VLC_CODEC_I420:
@@ -248,7 +251,7 @@ void video_format_ScaleCropAr( video_format_t *p_dst, const video_format_t *p_sr
                 p_dst->i_sar_num, p_dst->i_sar_den, 65536);
 }
 
-//Simplify transforms to have something more managable. Order: angle, hflip.
+//Simplify transforms to have something more manageable. Order: angle, hflip.
 static void transform_GetBasicOps( video_transform_t transform,
                                    unsigned *restrict angle,
                                    bool *restrict hflip )
@@ -273,6 +276,8 @@ static void transform_GetBasicOps( video_transform_t transform,
         case TRANSFORM_IDENTITY:
             *angle = 0;
             break;
+        default:
+            vlc_assert_unreachable ();
     }
 }
 
@@ -393,6 +398,9 @@ bool video_format_IsSimilar( const video_format_t *f1,
     if( f1->orientation != f2->orientation)
         return false;
 
+    if( f1->multiview_mode!= f2->multiview_mode )
+       return false;
+
     if( f1->i_chroma == VLC_CODEC_RGB15 ||
         f1->i_chroma == VLC_CODEC_RGB16 ||
         f1->i_chroma == VLC_CODEC_RGB24 ||
@@ -443,7 +451,7 @@ void es_format_Init( es_format_t *fmt,
 
     memset( &fmt->audio, 0, sizeof(audio_format_t) );
     memset( &fmt->audio_replay_gain, 0, sizeof(audio_replay_gain_t) );
-    memset( &fmt->video, 0, sizeof(video_format_t) );
+    video_format_Init( &fmt->video, 0 );
     memset( &fmt->subs, 0, sizeof(subs_format_t) );
 
     fmt->b_packetized           = true;
@@ -504,14 +512,9 @@ int es_format_Copy(es_format_t *restrict dst, const es_format_t *src)
             ret = VLC_ENOMEM;
     }
 
-    if (src->video.p_palette != NULL)
-    {
-        dst->video.p_palette = malloc(sizeof (video_palette_t));
-        if (likely(dst->video.p_palette != NULL))
-            *dst->video.p_palette = *src->video.p_palette;
-        else
-            ret = VLC_ENOMEM;
-    }
+    int err = video_format_Copy( &dst->video, &src->video );
+    if ( err != VLC_SUCCESS )
+        return err;
 
     if (src->i_extra_languages > 0)
     {
@@ -545,7 +548,7 @@ void es_format_Clean(es_format_t *fmt)
     assert(fmt->i_extra == 0 || fmt->p_extra != NULL);
     free(fmt->p_extra);
 
-    free(fmt->video.p_palette);
+    video_format_Clean( &fmt->video );
     free(fmt->subs.psz_encoding);
 
     if (fmt->subs.p_style != NULL)

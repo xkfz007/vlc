@@ -155,6 +155,7 @@ static const uint32_t pi_3channels_in[] =
  ****************************************************************************/
 
 static block_t *DecodeBlock  ( decoder_t *, block_t ** );
+static void Flush( decoder_t * );
 static int  ProcessHeaders( decoder_t * );
 static int  ProcessInitialHeader ( decoder_t *, ogg_packet * );
 static void *ProcessPacket( decoder_t *, ogg_packet *, block_t ** );
@@ -185,6 +186,7 @@ static int OpenDecoder( vlc_object_t *p_this )
 
     p_dec->pf_decode_audio = DecodeBlock;
     p_dec->pf_packetize    = DecodeBlock;
+    p_dec->pf_flush        = Flush;
 
     p_sys->p_st = NULL;
 
@@ -360,6 +362,16 @@ static int ProcessInitialHeader( decoder_t *p_dec, ogg_packet *p_oggpacket )
 }
 
 /*****************************************************************************
+ * Flush:
+ *****************************************************************************/
+static void Flush( decoder_t *p_dec )
+{
+    decoder_sys_t *p_sys = p_dec->p_sys;
+
+    date_Set( &p_sys->end_date, 0 );
+}
+
+/*****************************************************************************
  * ProcessPacket: processes a Opus packet.
  *****************************************************************************/
 static void *ProcessPacket( decoder_t *p_dec, ogg_packet *p_oggpacket,
@@ -367,9 +379,22 @@ static void *ProcessPacket( decoder_t *p_dec, ogg_packet *p_oggpacket,
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
     block_t *p_block = *pp_block;
+    *pp_block = NULL; /* To avoid being fed the same packet again */
+
+    if( !p_block )
+        return NULL;
+
+    if( p_block->i_flags & BLOCK_FLAG_CORRUPTED )
+    {
+        block_Release( p_block );
+        return NULL;
+    }
+
+    if( p_block->i_flags & BLOCK_FLAG_DISCONTINUITY )
+        Flush( p_dec );
 
     /* Date management */
-    if( p_block && p_block->i_pts > VLC_TS_INVALID &&
+    if( p_block->i_pts > VLC_TS_INVALID &&
         p_block->i_pts != date_Get( &p_sys->end_date ) )
     {
         date_Set( &p_sys->end_date, p_block->i_pts );
@@ -378,14 +403,9 @@ static void *ProcessPacket( decoder_t *p_dec, ogg_packet *p_oggpacket,
     if( !date_Get( &p_sys->end_date ) )
     {
         /* We've just started the stream, wait for the first PTS. */
-        if( p_block ) block_Release( p_block );
+        block_Release( p_block );
         return NULL;
     }
-
-    *pp_block = NULL; /* To avoid being fed the same packet again */
-
-    if( !p_block )
-        return NULL;
 
     block_t *p_aout_buffer = DecodePacket( p_dec, p_oggpacket,
                                            p_block->i_nb_samples,
@@ -416,6 +436,8 @@ static block_t *DecodePacket( decoder_t *p_dec, ogg_packet *p_oggpacket,
     if(!i_nb_samples)
         i_nb_samples = spp;
 
+    if( decoder_UpdateAudioFormat( p_dec ) )
+        return NULL;
     block_t *p_aout_buffer=decoder_NewAudioBuffer( p_dec, spp );
     if ( !p_aout_buffer )
     {
@@ -450,8 +472,7 @@ static block_t *DecodePacket( decoder_t *p_dec, ogg_packet *p_oggpacket,
     {
         float gain = pow(10., p_sys->header.gain/5120.);
         float *buf =(float *)p_aout_buffer->p_buffer;
-        int i;
-        for( i = 0; i < i_nb_samples*p_sys->header.channels; i++)
+        for( int i = 0; i < i_nb_samples*p_sys->header.channels; i++)
             buf[i] *= gain;
     }
 #endif

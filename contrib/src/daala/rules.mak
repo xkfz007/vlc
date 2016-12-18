@@ -19,13 +19,13 @@ daala: daala-$(DAALA_VERSION).tar.gz .sum-daala
 	rm -Rf $@-git $@
 	mkdir -p $@-git
 	$(ZCAT) "$<" | (cd $@-git && tar xv --strip-components=1)
+	$(call pkg_static,"daaladec.pc.in")
+	$(call pkg_static,"daalaenc.pc.in")
 	$(MOVE)
 	mkdir -p $@/m4
 
 DAALACONF := $(HOSTCONF) \
-	--disable-player --disable-tools --disable-unit-tests
-
-DEPS_daala = ogg $(DEPS_ogg)
+	--disable-tools --disable-unit-tests --disable-examples
 
 .daala: daala
 	$(RECONF)

@@ -355,13 +355,24 @@ ssize_t config_GetIntChoices (vlc_object_t *obj, const char *name,
     size_t count = cfg->list_count;
     if (count == 0)
     {
+        if (module_Map(obj, cfg->owner))
+        {
+            errno = EIO;
+            return -1;
+        }
+
         if (cfg->list.i_cb == NULL)
             return 0;
         return cfg->list.i_cb(obj, name, values, texts);
     }
 
-    int64_t *vals = xmalloc (sizeof (*vals) * count);
-    char **txts = xmalloc (sizeof (*txts) * count);
+    int64_t *vals = malloc (sizeof (*vals) * count);
+    char **txts = malloc (sizeof (*txts) * count);
+    if (vals == NULL || txts == NULL)
+    {
+        errno = ENOMEM;
+        goto error;
+    }
 
     for (size_t i = 0; i < count; i++)
     {
@@ -370,12 +381,22 @@ ssize_t config_GetIntChoices (vlc_object_t *obj, const char *name,
         txts[i] = strdup ((cfg->list_text[i] != NULL)
                                        ? vlc_gettext (cfg->list_text[i]) : "");
         if (unlikely(txts[i] == NULL))
-            abort ();
+        {
+            for (int j = i - 1; j >= 0; --j)
+                free(txts[j]);
+            errno = ENOMEM;
+            goto error;
+        }
     }
 
     *values = vals;
     *texts = txts;
     return count;
+error:
+
+    free(vals);
+    free(txts);
+    return -1;
 }
 
 
@@ -387,6 +408,7 @@ static ssize_t config_ListModules (const char *cap, char ***restrict values,
     if (n <= 0)
     {
         *values = *texts = NULL;
+        module_list_free (list);
         return n;
     }
 
@@ -408,6 +430,7 @@ static ssize_t config_ListModules (const char *cap, char ***restrict values,
 
     *values = vals;
     *texts = txts;
+    module_list_free (list);
     return n + 2;
 }
 
@@ -448,6 +471,12 @@ ssize_t config_GetPszChoices (vlc_object_t *obj, const char *name,
     size_t count = cfg->list_count;
     if (count == 0)
     {
+        if (module_Map(obj, cfg->owner))
+        {
+            errno = EIO;
+            return -1;
+        }
+
         if (cfg->list.psz_cb == NULL)
             return 0;
         return cfg->list.psz_cb(obj, name, values, texts);
@@ -494,26 +523,22 @@ static struct
  */
 int config_SortConfig (void)
 {
-    size_t nmod, nconf = 0;
-    module_t **mlist = module_list_get (&nmod);
+    vlc_plugin_t *p;
+    size_t nconf = 0;
 
-    for (size_t i = 0; i < nmod; i++)
-         nconf  += mlist[i]->confsize;
+    for (p = vlc_plugins; p != NULL; p = p->next)
+         nconf += p->conf.size;
 
     module_config_t **clist = malloc (sizeof (*clist) * nconf);
     if (unlikely(clist == NULL))
-    {
-        module_list_free (mlist);
         return VLC_ENOMEM;
-    }
 
     nconf = 0;
-    for (size_t i = 0; i < nmod; i++)
+    for (p = vlc_plugins; p != NULL; p = p->next)
     {
-        module_t *parser = mlist[i];
         module_config_t *item, *end;
 
-        for (item = parser->p_config, end = item + parser->confsize;
+        for (item = p->conf.items, end = item + p->conf.size;
              item < end;
              item++)
         {
@@ -522,7 +547,6 @@ int config_SortConfig (void)
             clist[nconf++] = item;
         }
     }
-    module_list_free (mlist);
 
     qsort (clist, nconf, sizeof (*clist), confcmp);
 
@@ -570,31 +594,13 @@ void config_Free (module_config_t *tab, size_t confsize)
     {
         module_config_t *p_item = &tab[j];
 
-        free( p_item->psz_type );
-        free( p_item->psz_name );
-        free( p_item->psz_text );
-        free( p_item->psz_longtext );
-
-        if (IsConfigIntegerType (p_item->i_type))
-        {
-            if (p_item->list_count)
-                free (p_item->list.i);
-        }
-        else
         if (IsConfigStringType (p_item->i_type))
         {
             free (p_item->value.psz);
-            free (p_item->orig.psz);
             if (p_item->list_count)
-            {
-                for (size_t i = 0; i < p_item->list_count; i++)
-                    free (p_item->list.psz[i]);
                 free (p_item->list.psz);
-            }
         }
 
-        for (size_t i = 0; i < p_item->list_count; i++)
-                free (p_item->list_text[i]);
         free (p_item->list_text);
     }
 
@@ -607,17 +613,12 @@ void config_Free (module_config_t *tab, size_t confsize)
  *****************************************************************************/
 void config_ResetAll( vlc_object_t *p_this )
 {
-    size_t count;
-    module_t **list = module_list_get (&count);
-
     vlc_rwlock_wrlock (&config_lock);
-    for (size_t j = 0; j < count; j++)
+    for (vlc_plugin_t *p = vlc_plugins; p != NULL; p = p->next)
     {
-        module_t *p_module = list[j];
-
-        for (size_t i = 0; i < p_module->confsize; i++ )
+        for (size_t i = 0; i < p->conf.size; i++ )
         {
-            module_config_t *p_config = p_module->p_config + i;
+            module_config_t *p_config = p->conf.items + i;
 
             if (IsConfigIntegerType (p_config->i_type))
                 p_config->value.i = p_config->orig.i;
@@ -635,6 +636,5 @@ void config_ResetAll( vlc_object_t *p_this )
     }
     vlc_rwlock_unlock (&config_lock);
 
-    module_list_free (list);
     VLC_UNUSED(p_this);
 }

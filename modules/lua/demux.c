@@ -55,7 +55,7 @@ static int vlclua_demux_peek( lua_State *L )
     int n = luaL_checkint( L, 1 );
     const uint8_t *p_peek;
 
-    int i_peek = stream_Peek( p_demux->s, &p_peek, n );
+    int i_peek = vlc_stream_Peek( p_demux->s, &p_peek, n );
     if( i_peek > 0 )
         lua_pushlstring( L, (const char *)p_peek, i_peek );
     else
@@ -68,12 +68,12 @@ static int vlclua_demux_read( lua_State *L )
     demux_t *p_demux = (demux_t *)vlclua_get_this( L );
     const uint8_t *p_read;
     int n = luaL_checkint( L, 1 );
-    int i_read = stream_Peek( p_demux->s, &p_read, n );
+    int i_read = vlc_stream_Peek( p_demux->s, &p_read, n );
 
     if( i_read > 0 )
     {
         lua_pushlstring( L, (const char *)p_read, i_read );
-        int i_seek = stream_Read( p_demux->s, NULL, i_read );
+        int i_seek = vlc_stream_Read( p_demux->s, NULL, i_read );
         assert( i_read == i_seek );
     }
     else
@@ -85,7 +85,7 @@ static int vlclua_demux_read( lua_State *L )
 static int vlclua_demux_readline( lua_State *L )
 {
     demux_t *p_demux = (demux_t *)vlclua_get_this( L );
-    char *psz_line = stream_ReadLine( p_demux->s );
+    char *psz_line = vlc_stream_ReadLine( p_demux->s );
     if( psz_line )
     {
         lua_pushstring( L, psz_line );
@@ -141,7 +141,7 @@ static int probe_luascript( vlc_object_t *p_this, const char * psz_filename,
     luaL_openlibs( L ); /* FIXME: Don't open all the libs? */
 
     vlclua_set_this( L, p_demux );
-    luaL_register( L, "vlc", p_reg );
+    luaL_register_namespace( L, "vlc", p_reg );
     luaopen_msg( L );
     luaopen_strings( L );
     luaopen_stream( L );
@@ -246,10 +246,9 @@ static int Demux( demux_t *p_demux )
     lua_State *L = p_demux->p_sys->L;
     char *psz_filename = p_demux->p_sys->psz_filename;
 
-    input_thread_t *p_input_thread = demux_GetParentInput( p_demux );
-    input_item_t *p_current_input = input_GetItem( p_input_thread );
+    input_item_t *p_current_input = input_GetItem( p_demux->p_input );
 
-    luaL_register( L, "vlc", p_reg_parse );
+    luaL_register_namespace( L, "vlc", p_reg_parse );
 
     lua_getglobal( L, "parse" );
 
@@ -257,8 +256,7 @@ static int Demux( demux_t *p_demux )
     {
         msg_Warn( p_demux, "Error while running script %s, "
                   "function parse() not found", psz_filename );
-        vlc_object_release( p_input_thread );
-        return VLC_EGENERIC;
+        return VLC_DEMUXER_EGENERIC;
     }
 
     if( lua_pcall( L, 0, 1, 0 ) )
@@ -266,8 +264,7 @@ static int Demux( demux_t *p_demux )
         msg_Warn( p_demux, "Error while running script %s, "
                   "function parse(): %s", psz_filename,
                   lua_tostring( L, lua_gettop( L ) ) );
-        vlc_object_release( p_input_thread );
-        return VLC_EGENERIC;
+        return VLC_DEMUXER_EGENERIC;
     }
 
     if( lua_gettop( L ) )
@@ -275,9 +272,7 @@ static int Demux( demux_t *p_demux )
     else
         msg_Err( p_demux, "Script went completely foobar" );
 
-    vlc_object_release( p_input_thread );
-
-    return -1; /* Needed for correct operation of go back */
+    return VLC_DEMUXER_EOF;
 }
 
 static int Control( demux_t *p_demux, int i_query, va_list args )

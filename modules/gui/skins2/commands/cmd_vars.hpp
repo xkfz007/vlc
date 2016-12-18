@@ -55,7 +55,7 @@ public:
             vlc_gc_decref( m_pItem );
     }
     virtual void execute();
-    virtual string getType() const { return "playtree update"; }
+    virtual std::string getType() const { return "playtree update"; }
 
     /// Only accept removal of command if they concern the same item
     virtual bool checkRemove( CmdGeneric * ) const;
@@ -69,24 +69,15 @@ private:
 class CmdPlaytreeAppend: public CmdGeneric
 {
 public:
-    CmdPlaytreeAppend( intf_thread_t *pIntf, playlist_add_t *p_add ):
-        CmdGeneric( pIntf ), m_pAdd( NULL )
-    {
-        if( p_add )
-        {
-            m_pAdd = new playlist_add_t;
-            *m_pAdd = *p_add;
-        }
-    }
-    virtual ~CmdPlaytreeAppend()
-    {
-        delete m_pAdd;
-    }
+    CmdPlaytreeAppend( intf_thread_t *pIntf, int i_id ):
+        CmdGeneric( pIntf ), m_id( i_id )
+    { }
+    virtual ~CmdPlaytreeAppend() { }
     virtual void execute();
-    virtual string getType() const { return "playtree append"; }
+    virtual std::string getType() const { return "playtree append"; }
 
 private:
-    playlist_add_t * m_pAdd;
+    int m_id;
 };
 
 /// Command to notify the playtree of an item deletion
@@ -97,7 +88,7 @@ public:
         CmdGeneric( pIntf ), m_id( i_id ) { }
     virtual ~CmdPlaytreeDelete() { }
     virtual void execute();
-    virtual string getType() const { return "playtree append"; }
+    virtual std::string getType() const { return "playtree append"; }
 
 private:
     int m_id;
@@ -112,7 +103,7 @@ public:
         CmdGeneric( pIntf ), m_rText( rText ), m_value( rValue ) { }
     virtual ~CmdSetText() { }
     virtual void execute();
-    virtual string getType() const { return "set text"; }
+    virtual std::string getType() const { return "set text"; }
 
 private:
     /// Text variable to set
@@ -130,7 +121,7 @@ public:
                   : CmdGeneric( I ), m_rPreamp( P ), m_value( v ) { }
     virtual ~CmdSetEqPreamp() { }
     virtual void execute();
-    virtual string getType() const { return "set equalizer preamp"; }
+    virtual std::string getType() const { return "set equalizer preamp"; }
 
 private:
     /// Preamp variable to set
@@ -144,17 +135,17 @@ private:
 class CmdSetEqBands: public CmdGeneric
 {
 public:
-    CmdSetEqBands( intf_thread_t *I, EqualizerBands &B, const string &V )
+    CmdSetEqBands( intf_thread_t *I, EqualizerBands &B, const std::string &V )
                  : CmdGeneric( I ), m_rEqBands( B ), m_value( V ) { }
     virtual ~CmdSetEqBands() { }
     virtual void execute();
-    virtual string getType() const { return "set equalizer bands"; }
+    virtual std::string getType() const { return "set equalizer bands"; }
 
 private:
     /// Equalizer variable to set
     EqualizerBands &m_rEqBands;
     /// Value to set
-    const string m_value;
+    const std::string m_value;
 };
 
 

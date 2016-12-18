@@ -43,6 +43,7 @@
 #include <vlc_vout.h>
 
 #include <vlc_filter.h>
+#include <vlc_spu.h>
 #include <vlc_vout_osd.h>
 #include <vlc_image.h>
 
@@ -143,11 +144,11 @@ static vout_thread_t *VoutCreate(vlc_object_t *object,
     vlc_mutex_init(&vout->p->filter.lock);
     vlc_mutex_init(&vout->p->spu_lock);
 
-    /* Initialize subpicture unit */
-    vout->p->spu = spu_Create(vout);
-
     /* Take care of some "interface/control" related initialisations */
     vout_IntfInit(vout);
+
+    /* Initialize subpicture unit */
+    vout->p->spu = spu_Create(vout);
 
     vout->p->title.show     = var_InheritBool(vout, "video-title-show");
     vout->p->title.timeout  = var_InheritInteger(vout, "video-title-timeout");
@@ -163,6 +164,7 @@ static vout_thread_t *VoutCreate(vlc_object_t *object,
     if (vout->p->splitter_name == NULL) {
         vout_window_cfg_t wcfg = {
             .is_standalone = !var_InheritBool(vout, "embedded-video"),
+            .is_fullscreen = var_GetBool(vout, "fullscreen"),
             .type = VOUT_WINDOW_TYPE_INVALID,
             // TODO: take pixel A/R, crop and zoom into account
 #ifdef __APPLE__
@@ -176,8 +178,6 @@ static vout_thread_t *VoutCreate(vlc_object_t *object,
         vout_window_t *window = vout_display_window_New(vout, &wcfg);
         if (window != NULL)
         {
-            if (var_InheritBool(vout, "fullscreen"))
-                vout_window_SetFullScreen(window, true);
             if (var_InheritBool(vout, "video-wallpaper"))
                 vout_window_SetState(window, VOUT_WINDOW_STATE_BELOW);
             else if (var_InheritBool(vout, "video-on-top"))
@@ -303,6 +303,12 @@ static void VoutDestructor(vlc_object_t *object)
 }
 
 /* */
+void vout_Cancel(vout_thread_t *vout, bool canceled)
+{
+    vout_control_PushBool(&vout->p->control, VOUT_CONTROL_CANCEL, canceled);
+    vout_control_WaitEmpty(&vout->p->control);
+}
+
 void vout_ChangePause(vout_thread_t *vout, bool is_paused, mtime_t date)
 {
     vout_control_cmd_t cmd;
@@ -314,7 +320,8 @@ void vout_ChangePause(vout_thread_t *vout, bool is_paused, mtime_t date)
     vout_control_WaitEmpty(&vout->p->control);
 }
 
-void vout_GetResetStatistic(vout_thread_t *vout, int *displayed, int *lost)
+void vout_GetResetStatistic(vout_thread_t *vout, unsigned *restrict displayed,
+                            unsigned *restrict lost)
 {
     vout_statistic_GetReset( &vout->p->statistic, displayed, lost );
 }
@@ -356,6 +363,17 @@ void vout_DisplayTitle(vout_thread_t *vout, const char *title)
     vout_control_PushString(&vout->p->control, VOUT_CONTROL_OSD_TITLE, title);
 }
 
+void vout_WindowMouseEvent(vout_thread_t *vout,
+                           const vout_window_mouse_event_t *mouse)
+{
+    assert(mouse);
+    vout_control_cmd_t cmd;
+    vout_control_cmd_Init(&cmd, VOUT_CONTROL_WINDOW_MOUSE);
+    cmd.u.window_mouse = *mouse;
+
+    vout_control_Push(&vout->p->control, &cmd);
+}
+
 void vout_PutSubpicture( vout_thread_t *vout, subpicture_t *subpic )
 {
     vout_control_cmd_t cmd;
@@ -382,22 +400,21 @@ void vout_FlushSubpictureChannel( vout_thread_t *vout, int channel )
 }
 
 /**
- * It retreives a picture from the vout or NULL if no pictures are
- * available yet.
+ * Allocates a video output picture buffer.
  *
- * You MUST call vout_PutPicture or picture_Release on it.
+ * Either vout_PutPicture() or picture_Release() must be used to return the
+ * buffer to the video output free buffer pool.
  *
  * You may use picture_Hold() (paired with picture_Release()) to keep a
  * read-only reference.
  */
 picture_t *vout_GetPicture(vout_thread_t *vout)
 {
-    picture_t *picture = picture_pool_Get(vout->p->decoder_pool);
-    if (picture) {
+    picture_t *picture = picture_pool_Wait(vout->p->decoder_pool);
+    if (likely(picture != NULL)) {
         picture_Reset(picture);
         VideoFormatCopyCropAr(&picture->format, &vout->p->original);
     }
-
     return picture;
 }
 
@@ -534,12 +551,31 @@ void vout_ControlChangeSubMargin(vout_thread_t *vout, int margin)
                              margin);
 }
 
+void vout_ControlChangeViewpoint(vout_thread_t *vout,
+                                 const vlc_viewpoint_t *p_viewpoint)
+{
+    vout_control_cmd_t cmd;
+    vout_control_cmd_Init(&cmd, VOUT_CONTROL_VIEWPOINT);
+    cmd.u.viewpoint = *p_viewpoint;
+    vout_control_Push(&vout->p->control, &cmd);
+}
+
 /* */
 static void VoutGetDisplayCfg(vout_thread_t *vout, vout_display_cfg_t *cfg, const char *title)
 {
     /* Load configuration */
     cfg->is_fullscreen = var_CreateGetBool(vout, "fullscreen")
                          || var_InheritBool(vout, "video-wallpaper");
+    const vlc_viewpoint_t *p_viewpoint = var_InheritAddress(vout, "viewpoint");
+    if (p_viewpoint != NULL)
+        cfg->viewpoint = *p_viewpoint;
+    else
+    {
+        cfg->viewpoint.yaw   = vout->p->original.pose.f_yaw_degrees;
+        cfg->viewpoint.pitch = vout->p->original.pose.f_pitch_degrees;
+        cfg->viewpoint.roll  = vout->p->original.pose.f_roll_degrees;
+        cfg->viewpoint.fov   = vout->p->original.pose.f_fov_degrees;
+    }
     cfg->display.title = title;
     const int display_width = var_CreateGetInteger(vout, "width");
     const int display_height = var_CreateGetInteger(vout, "height");
@@ -609,6 +645,13 @@ void vout_SetDisplayWindowSize(vout_thread_t *vout,
      * although the display is allowed to ignore the size anyway. */
         /* FIXME: remove this, fix MSW and OS/2 window providers */
         vout_display_SendEventDisplaySize(vout->p->display.vd, width, height);
+}
+
+int vout_HideWindowMouse(vout_thread_t *vout, bool hide)
+{
+    vout_window_t *window = vout->p->window;
+
+    return window != NULL ? vout_window_HideMouse(window, hide) : VLC_EGENERIC;
 }
 
 /* */
@@ -726,8 +769,8 @@ static void ThreadChangeFilters(vout_thread_t *vout,
 
     if (!es_format_IsSimilar(&fmt_current, &fmt_target)) {
         msg_Dbg(vout, "Adding a filter to compensate for format changes");
-        if (!filter_chain_AppendFilter(vout->p->filter.chain_interactive, NULL, NULL,
-                                       &fmt_current, &fmt_target)) {
+        if (!filter_chain_AppendConverter(vout->p->filter.chain_interactive,
+                                          &fmt_current, &fmt_target)) {
             msg_Err(vout, "Failed to compensate for the format changes, removing all filters");
             filter_chain_Reset(vout->p->filter.chain_static,      &fmt_target, &fmt_target);
             filter_chain_Reset(vout->p->filter.chain_interactive, &fmt_target, &fmt_target);
@@ -935,7 +978,9 @@ static int ThreadDisplayRenderPicture(vout_thread_t *vout, bool is_forced)
 
     assert(vout_IsDisplayFiltered(vd) == !sys->display.use_dr);
     if (sys->display.use_dr && !is_direct) {
-        picture_t *direct = picture_pool_Get(vout->p->display_pool);
+        picture_t *direct = NULL;
+        if (likely(vout->p->display_pool != NULL))
+            direct = picture_pool_Get(vout->p->display_pool);
         if (!direct) {
             picture_Release(todisplay);
             if (subpic)
@@ -964,19 +1009,23 @@ static int ThreadDisplayRenderPicture(vout_thread_t *vout, bool is_forced)
     if (sys->display.use_dr) {
         vout_display_Prepare(vd, todisplay, subpic);
     } else {
-        sys->display.filtered = vout_FilterDisplay(vd, todisplay);
-        if (sys->display.filtered) {
-            if (!do_dr_spu && !do_early_spu && vout->p->spu_blend && subpic)
-                picture_BlendSubpicture(sys->display.filtered, vout->p->spu_blend, subpic);
-            vout_display_Prepare(vd, sys->display.filtered, do_dr_spu ? subpic : NULL);
+        todisplay = vout_FilterDisplay(vd, todisplay);
+        if (todisplay == NULL)
+        {
+            if (subpic != NULL)
+                subpicture_Delete(subpic);
+            return VLC_EGENERIC;
         }
+
+        if (!do_dr_spu && !do_early_spu && vout->p->spu_blend && subpic)
+            picture_BlendSubpicture(todisplay, vout->p->spu_blend, subpic);
+        vout_display_Prepare(vd, todisplay, do_dr_spu ? subpic : NULL);
+
         if (!do_dr_spu && subpic)
         {
             subpicture_Delete(subpic);
             subpic = NULL;
         }
-        if (!sys->display.filtered)
-            return VLC_EGENERIC;
     }
 
     vout_chrono_Stop(&vout->p->render);
@@ -1000,11 +1049,7 @@ static int ThreadDisplayRenderPicture(vout_thread_t *vout, bool is_forced)
 
     /* Display the direct buffer returned by vout_RenderPicture */
     vout->p->displayed.date = mdate();
-    vout_display_Display(vd,
-                         sys->display.filtered ? sys->display.filtered
-                                                : todisplay,
-                         subpic);
-    sys->display.filtered = NULL;
+    vout_display_Display(vd, todisplay, subpic);
 
     vout_statistic_AddDisplayed(&vout->p->statistic, 1);
 
@@ -1234,6 +1279,48 @@ static void ThreadChangeWindowState(vout_thread_t *vout, unsigned state)
 #endif
 }
 
+static void ThreadChangeWindowMouse(vout_thread_t *vout,
+                                    const vout_window_mouse_event_t *mouse)
+{
+    vout_display_t *vd = vout->p->display.vd;
+    switch (mouse->type)
+    {
+        case VOUT_WINDOW_MOUSE_STATE:
+        case VOUT_WINDOW_MOUSE_MOVED:
+        {
+            vout_display_place_t place;
+            vout_display_PlacePicture(&place, &vd->source, vd->cfg, false);
+
+            if (place.width <= 0 || place.height <= 0)
+                return;
+
+            const int x = vd->source.i_x_offset +
+                (int64_t)(mouse->x - place.x) *
+                vd->source.i_visible_width / place.width;
+            const int y = vd->source.i_y_offset +
+                (int64_t)(mouse->y - place.y) *
+                vd->source.i_visible_height/ place.height;
+
+            if (mouse->type == VOUT_WINDOW_MOUSE_STATE)
+                vout_display_SendEventMouseState(vd, x, y, mouse->button_mask);
+            else
+                vout_display_SendEventMouseMoved(vd, x, y);
+            break;
+        }
+        case VOUT_WINDOW_MOUSE_PRESSED:
+            vout_display_SendEventMousePressed(vd, mouse->button_mask);
+            break;
+        case VOUT_WINDOW_MOUSE_RELEASED:
+            vout_display_SendEventMouseReleased(vd, mouse->button_mask);
+            break;
+        case VOUT_WINDOW_MOUSE_DOUBLE_CLICK:
+            vout_display_SendEventMouseDoubleClick(vd);
+            break;
+        default: vlc_assert_unreachable();
+            break;
+    }
+}
+
 static void ThreadChangeDisplayFilled(vout_thread_t *vout, bool is_filled)
 {
     vout_SetDisplayFilled(vout->p->display.vd, is_filled);
@@ -1281,7 +1368,13 @@ static void ThreadExecuteCropRatio(vout_thread_t *vout,
                         0, 0, 0, 0);
 }
 
-static int ThreadStart(vout_thread_t *vout, const vout_display_state_t *state)
+static void ThreadExecuteViewpoint(vout_thread_t *vout,
+                                   const vlc_viewpoint_t *p_viewpoint)
+{
+    vout_SetDisplayViewpoint(vout->p->display.vd, p_viewpoint);
+}
+
+static int ThreadStart(vout_thread_t *vout, vout_display_state_t *state)
 {
     vlc_mouse_Init(&vout->p->mouse);
     vout->p->decoder_fifo = picture_fifo_New();
@@ -1326,7 +1419,10 @@ static int ThreadStart(vout_thread_t *vout, const vout_display_state_t *state)
     if (vout_OpenWrapper(vout, vout->p->splitter_name, state))
         goto error;
     if (vout_InitWrapper(vout))
+    {
+        vout_CloseWrapper(vout, state);
         goto error;
+    }
     assert(vout->p->decoder_pool);
 
     vout->p->displayed.current       = NULL;
@@ -1448,6 +1544,11 @@ static int ThreadReinit(vout_thread_t *vout,
     return VLC_SUCCESS;
 }
 
+static void ThreadCancel(vout_thread_t *vout, bool canceled)
+{
+    picture_pool_Cancel(vout->p->decoder_pool, canceled);
+}
+
 static int ThreadControl(vout_thread_t *vout, vout_control_cmd_t cmd)
 {
     switch(cmd.type) {
@@ -1466,6 +1567,9 @@ static int ThreadControl(vout_thread_t *vout, vout_control_cmd_t cmd)
     case VOUT_CONTROL_REINIT:
         if (ThreadReinit(vout, cmd.u.cfg))
             return 1;
+        break;
+    case VOUT_CONTROL_CANCEL:
+        ThreadCancel(vout, cmd.u.boolean);
         break;
     case VOUT_CONTROL_SUBPICTURE:
         ThreadDisplaySubpicture(vout, cmd.u.subpicture);
@@ -1507,6 +1611,9 @@ static int ThreadControl(vout_thread_t *vout, vout_control_cmd_t cmd)
     case VOUT_CONTROL_WINDOW_STATE:
         ThreadChangeWindowState(vout, cmd.u.integer);
         break;
+    case VOUT_CONTROL_WINDOW_MOUSE:
+        ThreadChangeWindowMouse(vout, &cmd.u.window_mouse);
+        break;
     case VOUT_CONTROL_DISPLAY_FILLED:
         ThreadChangeDisplayFilled(vout, cmd.u.boolean);
         break;
@@ -1528,6 +1635,9 @@ static int ThreadControl(vout_thread_t *vout, vout_control_cmd_t cmd)
         ThreadExecuteCropBorder(vout,
                 cmd.u.border.left,  cmd.u.border.top,
                 cmd.u.border.right, cmd.u.border.bottom);
+        break;
+    case VOUT_CONTROL_VIEWPOINT:
+        ThreadExecuteViewpoint(vout, &cmd.u.viewpoint);
         break;
     default:
         break;

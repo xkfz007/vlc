@@ -30,6 +30,7 @@
 #endif
 
 #include <vlc/libvlc.h>
+#include <vlc/libvlc_renderer_discoverer.h>
 #include <vlc/libvlc_media.h>
 #include <vlc/libvlc_media_player.h>
 
@@ -281,6 +282,53 @@ void libvlc_video_set_aspect_ratio( libvlc_media_player_t *p_mi,
     free (pp_vouts);
 }
 
+libvlc_video_viewpoint_t *libvlc_video_new_viewpoint(void)
+{
+    libvlc_video_viewpoint_t *p_vp = malloc(sizeof *p_vp);
+    if (unlikely(p_vp == NULL))
+        return NULL;
+    p_vp->f_yaw = p_vp->f_pitch = p_vp->f_roll = p_vp->f_field_of_view = 0.0f;
+    return p_vp;
+}
+
+int libvlc_video_update_viewpoint( libvlc_media_player_t *p_mi,
+                                   const libvlc_video_viewpoint_t *p_viewpoint,
+                                   bool b_absolute )
+{
+    vlc_viewpoint_t update = {
+        .yaw   = p_viewpoint->f_yaw,
+        .pitch = p_viewpoint->f_pitch,
+        .roll  = p_viewpoint->f_roll,
+        .fov   = p_viewpoint->f_field_of_view,
+    };
+
+    input_thread_t *p_input_thread = libvlc_get_input_thread( p_mi );
+    if( p_input_thread != NULL )
+    {
+        if( input_UpdateViewpoint( p_input_thread, &update,
+                                   b_absolute ) != VLC_SUCCESS )
+        {
+            vlc_object_release( p_input_thread );
+            return -1;
+        }
+        vlc_object_release( p_input_thread );
+        return 0;
+    }
+
+    /* Save the viewpoint in case the input is not created yet */
+    if( !b_absolute )
+    {
+        p_mi->viewpoint.yaw += update.yaw;
+        p_mi->viewpoint.pitch += update.pitch;
+        p_mi->viewpoint.roll += update.roll;
+        p_mi->viewpoint.fov += update.fov;
+    }
+    else
+        p_mi->viewpoint = update;
+
+    return 0;
+}
+
 int libvlc_video_get_spu( libvlc_media_player_t *p_mi )
 {
     input_thread_t *p_input_thread = libvlc_get_input_thread( p_mi );
@@ -405,8 +453,8 @@ libvlc_track_description_t *
         libvlc_video_get_chapter_description( libvlc_media_player_t *p_mi,
                                               int i_title )
 {
-    char psz_title[12];
-    sprintf( psz_title,  "title %2i", i_title );
+    char psz_title[sizeof ("title ") + 3 * sizeof (int)];
+    sprintf( psz_title,  "title %2u", i_title );
     return libvlc_get_track_description( p_mi, psz_title );
 }
 
@@ -429,14 +477,7 @@ void libvlc_video_set_crop_geometry( libvlc_media_player_t *p_mi,
     for (size_t i = 0; i < n; i++)
     {
         vout_thread_t *p_vout = pp_vouts[i];
-        vlc_value_t val;
 
-        /* Make sure the geometry is in the choice list */
-        /* Earlier choices are removed to not grow a long list over time. */
-        /* FIXME: not atomic - lock? */
-        val.psz_string = (char *)psz_geometry;
-        var_Change (p_vout, "crop", VLC_VAR_CLEARCHOICES, NULL, NULL);
-        var_Change (p_vout, "crop", VLC_VAR_ADDCHOICE, &val, &val);
         var_SetString (p_vout, "crop", psz_geometry);
         vlc_object_release (p_vout);
     }

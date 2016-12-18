@@ -91,8 +91,6 @@ static const DBusObjectPathVTable dbus_mpris_vtable = {
 typedef struct
 {
     int signal;
-    int i_node;
-    int i_item;
 } callback_info_t;
 
 enum
@@ -182,8 +180,8 @@ static int Open( vlc_object_t *p_this )
         msg_Err( p_this, "Failed to connect to the D-Bus session daemon: %s",
                 error.message );
         dbus_error_free( &error );
-        close( p_sys->p_pipe_fds[1] );
-        close( p_sys->p_pipe_fds[0] );
+        vlc_close( p_sys->p_pipe_fds[1] );
+        vlc_close( p_sys->p_pipe_fds[0] );
         free( p_sys );
         return VLC_EGENERIC;
     }
@@ -238,7 +236,6 @@ static int Open( vlc_object_t *p_this )
     p_sys->p_playlist = p_playlist;
 
     var_AddCallback( p_playlist, "input-current", AllCallback, p_intf );
-    var_AddCallback( p_playlist, "intf-change", AllCallback, p_intf );
     var_AddCallback( p_playlist, "volume", AllCallback, p_intf );
     var_AddCallback( p_playlist, "mute", AllCallback, p_intf );
     var_AddCallback( p_playlist, "playlist-item-append", AllCallback, p_intf );
@@ -280,8 +277,8 @@ error:
 
     vlc_mutex_destroy( &p_sys->lock );
 
-    close( p_sys->p_pipe_fds[1] );
-    close( p_sys->p_pipe_fds[0] );
+    vlc_close( p_sys->p_pipe_fds[1] );
+    vlc_close( p_sys->p_pipe_fds[0] );
     free( p_sys );
     return VLC_ENOMEM;
 }
@@ -300,7 +297,6 @@ static void Close   ( vlc_object_t *p_this )
     vlc_join( p_sys->thread, NULL );
 
     var_DelCallback( p_playlist, "input-current", AllCallback, p_intf );
-    var_DelCallback( p_playlist, "intf-change", AllCallback, p_intf );
     var_DelCallback( p_playlist, "volume", AllCallback, p_intf );
     var_DelCallback( p_playlist, "mute", AllCallback, p_intf );
     var_DelCallback( p_playlist, "playlist-item-append", AllCallback, p_intf );
@@ -333,8 +329,8 @@ static void Close   ( vlc_object_t *p_this )
     vlc_array_destroy( p_sys->p_events );
     vlc_array_destroy( p_sys->p_timeouts );
     vlc_array_destroy( p_sys->p_watches );
-    close( p_sys->p_pipe_fds[1] );
-    close( p_sys->p_pipe_fds[0] );
+    vlc_close( p_sys->p_pipe_fds[1] );
+    vlc_close( p_sys->p_pipe_fds[0] );
     free( p_sys );
 }
 
@@ -555,7 +551,6 @@ static void ProcessEvents( intf_thread_t *p_intf,
 
             vlc_dictionary_insert( &player_properties, "Metadata", NULL );
             break;
-        case SIGNAL_INTF_CHANGE:
         case SIGNAL_PLAYLIST_ITEM_APPEND:
         case SIGNAL_PLAYLIST_ITEM_DELETED:
         {
@@ -616,20 +611,8 @@ static void ProcessEvents( intf_thread_t *p_intf,
             vlc_dictionary_insert( &player_properties, "CanPause", NULL );
             break;
         case SIGNAL_SEEK:
-        {
-            input_thread_t *p_input;
-            input_item_t *p_item;
-            p_input = pl_CurrentInput( p_intf );
-            if( p_input )
-            {
-                p_item = input_GetItem( p_input );
-                vlc_object_release( p_input );
-
-                if( p_item && ( p_item->i_id == p_events[i]->i_item ) )
-                    SeekedEmit( p_intf );
-            }
+            SeekedEmit( p_intf );
             break;
-        }
         default:
             vlc_assert_unreachable();
         }
@@ -946,7 +929,6 @@ static int InputCallback( vlc_object_t *p_this, const char *psz_var,
                 break;
 
             p_info->signal = SIGNAL_SEEK;
-            p_info->i_item = input_GetItem( p_input )->i_id;
             break;
         }
         default:
@@ -994,13 +976,8 @@ static int AllCallback( vlc_object_t *p_this, const char *psz_var,
         if( oldval.b_bool != newval.b_bool )
             info.signal = SIGNAL_VOLUME_MUTED;
     }
-    else if( !strcmp( "intf-change", psz_var ) )
-        info.signal = SIGNAL_INTF_CHANGE;
     else if( !strcmp( "playlist-item-append", psz_var ) )
-    {
         info.signal = SIGNAL_PLAYLIST_ITEM_APPEND;
-        info.i_node = ((playlist_add_t*)newval.p_address)->i_node;
-    }
     else if( !strcmp( "playlist-item-deleted", psz_var ) )
         info.signal = SIGNAL_PLAYLIST_ITEM_DELETED;
     else if( !strcmp( "random", psz_var ) )
@@ -1160,9 +1137,9 @@ int DemarshalSetPropertyValue( DBusMessage *p_msg, void *p_arg )
         free( psz ); \
     }
 
-int GetInputMeta( input_item_t* p_input,
-                  DBusMessageIter *args )
+int GetInputMeta( playlist_item_t *item, DBusMessageIter *args )
 {
+    input_item_t *p_input = item->p_input;
     DBusMessageIter dict, dict_entry, variant, list;
     /** The duration of the track can be expressed in second, milli-seconds and
         µ-seconds */
@@ -1171,18 +1148,19 @@ int GetInputMeta( input_item_t* p_input,
     dbus_int64_t i_length = i_mtime / 1000;
     char *psz_trackid;
 
-    if( -1 == asprintf( &psz_trackid, MPRIS_TRACKID_FORMAT, p_input->i_id ) )
+    if( -1 == asprintf( &psz_trackid, MPRIS_TRACKID_FORMAT, item->i_id ) )
         return VLC_ENOMEM;
 
     const char* ppsz_meta_items[] =
     {
-    "mpris:trackid", "xesam:url", "xesam:title", "xesam:artist", "xesam:album",
-    "xesam:tracknumber", "vlc:time", "mpris:length", "xesam:genre",
-    "xesam:userRating", "xesam:contentCreated", "mpris:artUrl", "mb:trackId",
-    "vlc:audio-bitrate", "vlc:audio-samplerate", "vlc:video-bitrate",
-    "vlc:audio-codec", "vlc:copyright", "xesam:comment", "vlc:encodedby",
-    "language", "vlc:length", "vlc:nowplaying", "vlc:publisher", "vlc:setting",
-    "status", "vlc:url", "vlc:video-codec"
+        "mpris:trackid", "xesam:url", "xesam:title", "xesam:artist",
+        "xesam:album", "xesam:tracknumber", "vlc:time", "mpris:length",
+        "xesam:genre", "xesam:userRating", "xesam:contentCreated",
+        "mpris:artUrl", "mb:trackId", "vlc:audio-bitrate",
+        "vlc:audio-samplerate", "vlc:video-bitrate", "vlc:audio-codec",
+        "vlc:copyright", "xesam:comment", "vlc:encodedby", "language",
+        "vlc:length", "vlc:nowplaying", "vlc:publisher", "vlc:setting",
+        "status", "vlc:url", "vlc:video-codec"
     };
 
     dbus_message_iter_open_container( args, DBUS_TYPE_ARRAY, "{sv}", &dict );

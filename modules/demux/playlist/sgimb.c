@@ -83,7 +83,7 @@
  * DeliveryService=cds
  *     Simulcasted (scheduled unicast) content. (Green dot in Kasenna web interface)
  * sgiShowingName=A nice name that everyone likes
- *     A human readible descriptive title for this stream.
+ *     A human-readable descriptive title for this stream.
  * sgiSid=2311
  *     Looks like this is the ID of the scheduled asset?
  * sgiUserAccount=pid=1724&time=1078527309&displayText=You%20are%20logged%20as%20guest&
@@ -142,7 +142,7 @@ int Import_SGIMB( vlc_object_t * p_this )
 
     CHECK_FILE();
     /* Lets check the content to see if this is a sgi mediabase file */
-    i_size = stream_Peek( p_demux->s, &p_peek, MAX_LINE );
+    i_size = vlc_stream_Peek( p_demux->s, &p_peek, MAX_LINE );
     i_size -= sizeof("sgiNameServerHost=") - 1;
     if ( i_size > 0 )
     {
@@ -324,7 +324,7 @@ static int Demux ( demux_t *p_demux )
 
     input_item_t *p_current_input = GetCurrentItem(p_demux);
 
-    while( ( psz_line = stream_ReadLine( p_demux->s ) ) )
+    while( ( psz_line = vlc_stream_ReadLine( p_demux->s ) ) )
     {
         ParseLine( p_demux, psz_line );
         free( psz_line );
@@ -373,9 +373,9 @@ static int Demux ( demux_t *p_demux )
         p_sys->psz_uri = uri;
     }
 
-    p_child = input_item_NewWithType( p_sys->psz_uri,
+    p_child = input_item_NewStream( p_sys->psz_uri,
                       p_sys->psz_name ? p_sys->psz_name : p_sys->psz_uri,
-                      0, NULL, 0, p_sys->i_duration, ITEM_TYPE_STREAM );
+                      p_sys->i_duration  );
 
     if( !p_child )
     {
@@ -383,7 +383,7 @@ static int Demux ( demux_t *p_demux )
         return -1;
     }
 
-    input_item_CopyOptions( p_current_input, p_child );
+    input_item_CopyOptions( p_child, p_current_input );
     if( p_sys->i_packet_size && p_sys->psz_mcast_ip )
     {
         char *psz_option;

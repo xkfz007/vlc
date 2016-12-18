@@ -27,7 +27,7 @@
 
 #include "libvlc_internal.h"
 #include <vlc_modules.h>
-#include <vlc/libvlc.h>
+#include <vlc/vlc.h>
 
 #include <vlc_interface.h>
 #include <vlc_vlm.h>
@@ -102,6 +102,7 @@ void libvlc_release( libvlc_instance_t *p_instance )
         vlc_mutex_destroy( lock );
         if( p_instance->libvlc_vlm.pf_release )
             p_instance->libvlc_vlm.pf_release( p_instance );
+        libvlc_Quit( p_instance->p_libvlc_int );
         libvlc_InternalCleanup( p_instance->p_libvlc_int );
         libvlc_InternalDestroy( p_instance->p_libvlc_int );
         free( p_instance );
@@ -250,7 +251,7 @@ libvlc_module_description_t *libvlc_audio_filter_list_get( libvlc_instance_t *p_
 
 libvlc_module_description_t *libvlc_video_filter_list_get( libvlc_instance_t *p_instance )
 {
-    return module_description_list_get( p_instance, "video filter2" );
+    return module_description_list_get( p_instance, "video filter" );
 }
 
 int64_t libvlc_clock(void)

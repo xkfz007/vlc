@@ -1,5 +1,5 @@
 /*****************************************************************************
- * window.c: "vout window" managment
+ * window.c: "vout window" management
  *****************************************************************************
  * Copyright (C) 2009 Laurent Aimar
  * $Id$
@@ -144,9 +144,16 @@ static void vout_display_window_ResizeNotify(vout_window_t *window,
 
 static void vout_display_window_CloseNotify(vout_window_t *window)
 {
-    vout_thread_t *vout = (vout_thread_t *)window->p_parent;
+    vout_thread_t *vout = (vout_thread_t *)window->obj.parent;
 
     vout_SendEventClose(vout);
+}
+
+static void vout_display_window_MouseEvent(vout_window_t *window,
+                                           const vout_window_mouse_event_t *mouse)
+{
+    vout_thread_t *vout = (vout_thread_t *)window->obj.parent;
+    vout_WindowMouseEvent(vout, mouse);
 }
 
 /**
@@ -168,6 +175,7 @@ vout_window_t *vout_display_window_New(vout_thread_t *vout,
         .sys = state,
         .resized = vout_display_window_ResizeNotify,
         .closed = vout_display_window_CloseNotify,
+        .mouse_event = vout_display_window_MouseEvent,
     };
     vout_window_t *window;
 

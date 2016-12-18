@@ -1,28 +1,26 @@
 # protobuf
-PROTOBUF_VERSION := 2.6.0
-PROTOBUF_URL := https://protobuf.googlecode.com/svn/rc/protobuf-$(PROTOBUF_VERSION).tar.bz2
+PROTOBUF_VERSION := 3.1.0
+PROTOBUF_URL := https://github.com/google/protobuf/releases/download/v$(PROTOBUF_VERSION)/protobuf-cpp-$(PROTOBUF_VERSION).tar.gz
 
 PKGS += protobuf
 ifeq ($(call need_pkg,"protobuf"),)
 PKGS_FOUND += protobuf
 endif
 
-$(TARBALLS)/protobuf-$(PROTOBUF_VERSION).tar.bz2:
-	$(call download,$(PROTOBUF_URL))
+$(TARBALLS)/protobuf-$(PROTOBUF_VERSION)-cpp.tar.gz:
+	$(call download_pkg,$(PROTOBUF_URL),protobuf)
 
-.sum-protobuf: protobuf-$(PROTOBUF_VERSION).tar.bz2
+.sum-protobuf: protobuf-$(PROTOBUF_VERSION)-cpp.tar.gz
 
 DEPS_protobuf = zlib $(DEPS_zlib)
 
-protobuf: protobuf-$(PROTOBUF_VERSION).tar.bz2 .sum-protobuf
+protobuf: protobuf-$(PROTOBUF_VERSION)-cpp.tar.gz .sum-protobuf
 	$(UNPACK)
-ifdef HAVE_WIN32
-	$(APPLY) $(SRC)/protobuf/win32.patch
-endif
+	mv protobuf-3.1.0 protobuf-3.1.0-cpp
 	$(MOVE)
 
 .protobuf: protobuf
 	$(RECONF)
-	cd $< && $(HOSTVARS) ./configure $(HOSTCONF) --with-protoc=protoc
+	cd $< && $(HOSTVARS) ./configure $(HOSTCONF) --with-protoc="$(PROTOC)"
 	cd $< && $(MAKE) && $(MAKE) install
 	touch $@

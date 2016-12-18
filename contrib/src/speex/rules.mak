@@ -1,6 +1,6 @@
 # speex
 
-SPEEX_VERSION := 1.2rc2
+SPEEX_VERSION := 1.2.0
 SPEEX_URL := http://downloads.us.xiph.org/releases/speex/speex-$(SPEEX_VERSION).tar.gz
 
 PKGS += speex
@@ -9,7 +9,7 @@ PKGS_FOUND += speex
 endif
 
 $(TARBALLS)/speex-$(SPEEX_VERSION).tar.gz:
-	$(call download,$(SPEEX_URL))
+	$(call download_pkg,$(SPEEX_URL),speex)
 
 .sum-speex: speex-$(SPEEX_VERSION).tar.gz
 

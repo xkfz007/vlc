@@ -179,6 +179,7 @@ typedef struct
  * Local prototypes
  *****************************************************************************/
 static block_t *DecodeFrame  ( decoder_t *, block_t ** );
+static void Flush( decoder_t * );
 
 /* */
 static int VobHeader( unsigned *pi_rate,
@@ -298,6 +299,7 @@ static int OpenCommon( vlc_object_t *p_this, bool b_packetizer )
     /* Set callback */
     p_dec->pf_decode_audio = DecodeFrame;
     p_dec->pf_packetize    = DecodeFrame;
+    p_dec->pf_flush        = Flush;
 
     return VLC_SUCCESS;
 }
@@ -308,6 +310,16 @@ static int OpenDecoder( vlc_object_t *p_this )
 static int OpenPacketizer( vlc_object_t *p_this )
 {
     return OpenCommon( p_this, true );
+}
+
+/*****************************************************************************
+ * Flush:
+ *****************************************************************************/
+static void Flush( decoder_t *p_dec )
+{
+    decoder_sys_t *p_sys = p_dec->p_sys;
+
+    date_Set( &p_sys->end_date, 0 );
 }
 
 /*****************************************************************************
@@ -326,6 +338,15 @@ static block_t *DecodeFrame( decoder_t *p_dec, block_t **pp_block )
 
     p_block = *pp_block;
     *pp_block = NULL; /* So the packet doesn't get re-sent */
+
+    if( p_block->i_flags & BLOCK_FLAG_DISCONTINUITY )
+        Flush( p_dec );
+
+    if( p_block->i_flags & BLOCK_FLAG_CORRUPTED )
+    {
+        block_Release( p_block );
+        return NULL;
+    }
 
     /* Date management */
     if( p_block->i_pts > VLC_TS_INVALID &&
@@ -350,8 +371,9 @@ static block_t *DecodeFrame( decoder_t *p_dec, block_t **pp_block )
 
     int i_ret;
     unsigned i_channels_padding = 0;
-    unsigned i_padding = 0;
+    unsigned i_padding = 0; /* only for AOB */
     aob_group_t p_aob_group[2];
+
     switch( p_sys->i_type )
     {
     case LPCM_VOB:
@@ -433,6 +455,8 @@ static block_t *DecodeFrame( decoder_t *p_dec, block_t **pp_block )
 
         /* */
         block_t *p_aout_buffer;
+        if( decoder_UpdateAudioFormat( p_dec ) )
+            return NULL;
         p_aout_buffer = decoder_NewAudioBuffer( p_dec, i_frame_length );
         if( !p_aout_buffer )
             return NULL;
@@ -444,6 +468,20 @@ static block_t *DecodeFrame( decoder_t *p_dec, block_t **pp_block )
 
         p_block->p_buffer += p_sys->i_header_size + i_padding;
         p_block->i_buffer -= p_sys->i_header_size + i_padding;
+
+        const unsigned block_nb_frames = p_block->i_buffer / ( i_bits * 4 / 8 );
+        const unsigned aout_nb_frames = p_aout_buffer->i_nb_samples
+            / ( p_dec->fmt_out.audio.i_bitspersample / 8 );
+
+        if( block_nb_frames > aout_nb_frames )
+        {
+            msg_Warn( p_dec, "invalid block size" );
+
+            block_Release( p_block );
+            block_Release( p_aout_buffer );
+
+            return NULL;
+        }
 
         switch( p_sys->i_type )
         {
@@ -793,7 +831,9 @@ static int AobHeader( unsigned *pi_rate,
     if( i_header_size + 3 < LPCM_AOB_HEADER_LEN )
         return VLC_EGENERIC;
 
-    *pi_padding = 3+i_header_size - LPCM_AOB_HEADER_LEN;
+    /* Padding = Total header size - Normal AOB header
+     *         + 3 bytes (1 for continuity counter + 2 for header_size ) */
+    *pi_padding = 3 + i_header_size - LPCM_AOB_HEADER_LEN;
 
     const int i_index_size_g1 = (p_header[6] >> 4) & 0x0f;
     const int i_index_size_g2 = (p_header[6]     ) & 0x0f;
@@ -813,7 +853,7 @@ static int AobHeader( unsigned *pi_rate,
 
     /* */
     /* max is 0x2, 0xf == unused */
-    g[0].i_bits = ( i_index_size_g1 != 0x0f ) ? 16 + 4 * i_index_size_g1 : 0;
+    g[0].i_bits = 16 + 4 * i_index_size_g1;
     g[1].i_bits = ( i_index_size_g2 != 0x0f ) ? 16 + 4 * i_index_size_g2 : 0;
 
     /* No info about interlacing of different sampling rate */

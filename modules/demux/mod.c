@@ -141,7 +141,7 @@ static int Open( vlc_object_t *p_this )
     ModPlug_Settings settings;
 
     /* We accept file based on extension match */
-    if( !p_demux->b_force )
+    if( !p_demux->obj.force )
     {
         const char *psz_ext = p_demux->psz_file ? strrchr( p_demux->psz_file, '.' )
                                                 : NULL;
@@ -170,7 +170,8 @@ static int Open( vlc_object_t *p_this )
     p_sys->i_data = i_size;
     p_sys->p_data = malloc( p_sys->i_data );
     if( p_sys->p_data )
-        p_sys->i_data = stream_Read( p_demux->s, p_sys->p_data, p_sys->i_data );
+        p_sys->i_data = vlc_stream_Read( p_demux->s, p_sys->p_data,
+                                         p_sys->i_data );
     if( p_sys->i_data <= 0 || !p_sys->p_data )
     {
         msg_Err( p_demux, "failed to read the complete file" );
@@ -215,7 +216,7 @@ static int Open( vlc_object_t *p_this )
     {
         msg_Err( p_demux, "failed to understand the file" );
         /* we try to seek to recover for other plugin */
-        stream_Seek( p_demux->s, 0 );
+        vlc_stream_Seek( p_demux->s, 0 );
         free( p_sys->p_data );
         free( p_sys );
         return VLC_EGENERIC;
@@ -226,7 +227,7 @@ static int Open( vlc_object_t *p_this )
     date_Set( &p_sys->pts, 0 );
     p_sys->i_length = ModPlug_GetLength( p_sys->f ) * INT64_C(1000);
 
-    msg_Dbg( p_demux, "MOD loaded name=%s lenght=%"PRId64"ms",
+    msg_Dbg( p_demux, "MOD loaded name=%s length=%"PRId64"ms",
              ModPlug_GetName( p_sys->f ),
              p_sys->i_length );
 
@@ -304,6 +305,10 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
 
     switch( i_query )
     {
+    case DEMUX_CAN_SEEK:
+        *va_arg( args, bool * ) = true;
+        return VLC_SUCCESS;
+
     case DEMUX_GET_POSITION:
         pf = (double*) va_arg( args, double* );
         if( p_sys->i_length > 0 )
@@ -512,7 +517,7 @@ static int Validate( demux_t *p_demux, const char *psz_ext )
     }
 
     const uint8_t *p_peek;
-    const int i_peek = stream_Peek( p_demux->s, &p_peek, 2048 );
+    const int i_peek = vlc_stream_Peek( p_demux->s, &p_peek, 2048 );
     if( i_peek < 4 )
         return VLC_EGENERIC;
 

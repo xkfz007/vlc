@@ -23,11 +23,6 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
 
-/**
- * \file
- * This file defines libvlc_media external API
- */
-
 #ifndef VLC_LIBVLC_MEDIA_H
 #define VLC_LIBVLC_MEDIA_H 1
 
@@ -40,14 +35,11 @@ extern "C" {
  * @ref libvlc_media_t is an abstract representation of a playable media.
  * It consists of a media location and various optional meta data.
  * @{
+ * \file
+ * LibVLC media item/descriptor external API
  */
 
 typedef struct libvlc_media_t libvlc_media_t;
-
-/** defgroup libvlc_meta LibVLC meta data
- * \ingroup libvlc_media
- * @{
- */
 
 /** Meta data types */
 typedef enum libvlc_meta_t {
@@ -75,11 +67,10 @@ typedef enum libvlc_meta_t {
     libvlc_meta_ShowName,
     libvlc_meta_Actors,
     libvlc_meta_AlbumArtist,
-    libvlc_meta_DiscNumber
+    libvlc_meta_DiscNumber,
+    libvlc_meta_DiscTotal
     /* Add new meta types HERE */
 } libvlc_meta_t;
-
-/** @}*/
 
 /**
  * Note the order of libvlc_state_t enum must match exactly the order of
@@ -87,14 +78,16 @@ typedef enum libvlc_meta_t {
  * and VideoLAN.LibVLC.State (at bindings/cil/src/media.cs).
  *
  * Expected states by web plugins are:
- * IDLE/CLOSE=0, OPENING=1, BUFFERING=2, PLAYING=3, PAUSED=4,
+ * IDLE/CLOSE=0, OPENING=1, PLAYING=3, PAUSED=4,
  * STOPPING=5, ENDED=6, ERROR=7
  */
 typedef enum libvlc_state_t
 {
     libvlc_NothingSpecial=0,
     libvlc_Opening,
-    libvlc_Buffering,
+    libvlc_Buffering, /* XXX: Deprecated value. Check the
+                       * libvlc_MediaPlayerBuffering event to know the
+                       * buffering state of a libvlc_media_player */
     libvlc_Playing,
     libvlc_Paused,
     libvlc_Stopped,
@@ -116,10 +109,6 @@ typedef enum libvlc_track_type_t
     libvlc_track_text      = 2
 } libvlc_track_type_t;
 
-/** defgroup libvlc_media_stats_t LibVLC media statistics
- * \ingroup libvlc_media
- * @{
- */
 typedef struct libvlc_media_stats_t
 {
     /* Input */
@@ -149,7 +138,6 @@ typedef struct libvlc_media_stats_t
     int         i_sent_bytes;
     float       f_send_bitrate;
 } libvlc_media_stats_t;
-/** @}*/
 
 typedef struct libvlc_media_track_info_t
 {
@@ -184,6 +172,26 @@ typedef struct libvlc_audio_track_t
     unsigned    i_rate;
 } libvlc_audio_track_t;
 
+typedef enum libvlc_video_orient_t
+{
+    libvlc_video_orient_top_left,       /**< Normal. Top line represents top, left column left. */
+    libvlc_video_orient_top_right,      /**< Flipped horizontally */
+    libvlc_video_orient_bottom_left,    /**< Flipped vertically */
+    libvlc_video_orient_bottom_right,   /**< Rotated 180 degrees */
+    libvlc_video_orient_left_top,       /**< Transposed */
+    libvlc_video_orient_left_bottom,    /**< Rotated 90 degrees clockwise (or 270 anti-clockwise) */
+    libvlc_video_orient_right_top,      /**< Rotated 90 degrees anti-clockwise */
+    libvlc_video_orient_right_bottom    /**< Anti-transposed */
+} libvlc_video_orient_t;
+
+typedef enum libvlc_video_projection_t
+{
+    libvlc_video_projection_rectangular,
+    libvlc_video_projection_equirectangular, /**< 360 spherical */
+
+    libvlc_video_projection_cubemap_layout_standard = 0x100,
+} libvlc_video_projection_t;
+
 typedef struct libvlc_video_track_t
 {
     unsigned    i_height;
@@ -192,6 +200,15 @@ typedef struct libvlc_video_track_t
     unsigned    i_sar_den;
     unsigned    i_frame_rate_num;
     unsigned    i_frame_rate_den;
+
+    libvlc_video_orient_t       i_orientation;
+    libvlc_video_projection_t   i_projection;
+    struct {
+        float f_yaw_degrees;    /**< View point yaw in degrees ]-180;180] */
+        float f_pitch_degrees;  /**< View point pitch in degrees ]-90;90] */
+        float f_roll_degrees;   /**< View point roll in degrees ]-180;180] */
+        float f_fov_degrees;    /**< View point fov in degrees ]0;180[ */
+    } pose; /**< Initial view point */
 } libvlc_video_track_t;
 
 typedef struct libvlc_subtitle_track_t
@@ -223,11 +240,6 @@ typedef struct libvlc_media_track_t
 
 } libvlc_media_track_t;
 
-/** defgroup libvlc_media_type LibVLC media type
- * \ingroup libvlc_media
- * @{
- */
-
 /**
  * Media type
  *
@@ -241,8 +253,6 @@ typedef enum libvlc_media_type_t {
     libvlc_media_type_stream,
     libvlc_media_type_playlist,
 } libvlc_media_type_t;
-
-/** @}*/
 
 /**
  * Parse flags used by libvlc_media_parse_with_options()
@@ -267,7 +277,48 @@ typedef enum libvlc_media_parse_flag_t
      * Fetch meta and covert art using network resources
      */
     libvlc_media_fetch_network  = 0x04,
+    /**
+     * Interact with the user (via libvlc_dialog_cbs) when preparsing this item
+     * (and not its sub items). Set this flag in order to receive a callback
+     * when the input is asking for credentials.
+     */
+    libvlc_media_do_interact    = 0x08,
 } libvlc_media_parse_flag_t;
+
+/**
+ * Parse status used sent by libvlc_media_parse_with_options() or returned by
+ * libvlc_media_get_parsed_status()
+ *
+ * \see libvlc_media_parse_with_options
+ * \see libvlc_media_get_parsed_status
+ */
+typedef enum libvlc_media_parsed_status_t
+{
+    libvlc_media_parsed_status_skipped = 1,
+    libvlc_media_parsed_status_failed,
+    libvlc_media_parsed_status_timeout,
+    libvlc_media_parsed_status_done,
+} libvlc_media_parsed_status_t;
+
+/**
+ * Type of a media slave: subtitle or audio.
+ */
+typedef enum libvlc_media_slave_type_t
+{
+    libvlc_media_slave_type_subtitle,
+    libvlc_media_slave_type_audio,
+} libvlc_media_slave_type_t;
+
+/**
+ * A slave of a libvlc_media_t
+ * \see libvlc_media_slaves_get
+ */
+typedef struct libvlc_media_slave_t
+{
+    char *                          psz_uri;
+    libvlc_media_slave_type_t       i_type;
+    unsigned int                    i_priority;
+} libvlc_media_slave_t;
 
 /**
  * Callback prototype to open a custom bitstream input media.
@@ -275,11 +326,11 @@ typedef enum libvlc_media_parse_flag_t
  * The same media item can be opened multiple times. Each time, this callback
  * is invoked. It should allocate and initialize any instance-specific
  * resources, then store them in *datap. The instance resources can be freed
- * in the @ref libvlc_close_cb callback.
+ * in the @ref libvlc_media_close_cb callback.
  *
  * \param opaque private pointer as passed to libvlc_media_new_callbacks()
  * \param datap storage space for a private data pointer [OUT]
- * \param sizep byte length of the bitstream or 0 if unknown [OUT]
+ * \param sizep byte length of the bitstream or UINT64_MAX if unknown [OUT]
  *
  * \note For convenience, *datap is initially NULL and *sizep is initially 0.
  *
@@ -520,12 +571,8 @@ LIBVLC_API libvlc_media_t *libvlc_media_duplicate( libvlc_media_t *p_md );
  *
  * If the media has not yet been parsed this will return NULL.
  *
- * This methods automatically calls libvlc_media_parse_async(), so after calling
- * it you may receive a libvlc_MediaMetaChanged event. If you prefer a synchronous
- * version ensure that you call libvlc_media_parse() before get_meta().
- *
  * \see libvlc_media_parse
- * \see libvlc_media_parse_async
+ * \see libvlc_media_parse_with_options
  * \see libvlc_MediaMetaChanged
  *
  * \param p_md the media descriptor
@@ -558,11 +605,9 @@ LIBVLC_API int libvlc_media_save_meta( libvlc_media_t *p_md );
 
 
 /**
- * Get current state of media descriptor object. Possible media states
- * are defined in libvlc_structures.c ( libvlc_NothingSpecial=0,
- * libvlc_Opening, libvlc_Buffering, libvlc_Playing, libvlc_Paused,
- * libvlc_Stopped, libvlc_Ended,
- * libvlc_Error).
+ * Get current state of media descriptor object. Possible media states are
+ * libvlc_NothingSpecial=0, libvlc_Opening, libvlc_Playing, libvlc_Paused,
+ * libvlc_Stopped, libvlc_Ended, libvlc_Error.
  *
  * \see libvlc_state_t
  * \param p_md a media descriptor object
@@ -619,80 +664,66 @@ LIBVLC_API libvlc_time_t
    libvlc_media_get_duration( libvlc_media_t *p_md );
 
 /**
- * Parse a media.
- *
- * This fetches (local) art, meta data and tracks information.
- * The method is synchronous.
- *
- * \see libvlc_media_parse_async
- * \see libvlc_media_get_meta
- * \see libvlc_media_get_tracks_info
- *
- * \param p_md media descriptor object
- */
-LIBVLC_API void
-libvlc_media_parse( libvlc_media_t *p_md );
-
-/**
- * Parse a media.
- *
- * This fetches (local) art, meta data and tracks information.
- * The method is the asynchronous of libvlc_media_parse().
- *
- * To track when this is over you can listen to libvlc_MediaParsedChanged
- * event. However if the media was already parsed you will not receive this
- * event.
- *
- * \see libvlc_media_parse
- * \see libvlc_MediaParsedChanged
- * \see libvlc_media_get_meta
- * \see libvlc_media_get_tracks_info
- *
- * \param p_md media descriptor object
- */
-LIBVLC_API void
-libvlc_media_parse_async( libvlc_media_t *p_md );
-
-/**
  * Parse the media asynchronously with options.
  *
  * This fetches (local or network) art, meta data and/or tracks information.
- * This method is the extended version of libvlc_media_parse_async().
+ * This method is the extended version of libvlc_media_parse_with_options().
  *
  * To track when this is over you can listen to libvlc_MediaParsedChanged
- * event. However if this functions returns an error, you will not receive this
- * event.
+ * event. However if this functions returns an error, you will not receive any
+ * events.
  *
  * It uses a flag to specify parse options (see libvlc_media_parse_flag_t). All
  * these flags can be combined. By default, media is parsed if it's a local
  * file.
  *
+ * \note Parsing can be aborted with libvlc_media_parse_stop().
+ *
  * \see libvlc_MediaParsedChanged
  * \see libvlc_media_get_meta
  * \see libvlc_media_tracks_get
+ * \see libvlc_media_get_parsed_status
  * \see libvlc_media_parse_flag_t
  *
  * \param p_md media descriptor object
  * \param parse_flag parse options:
+ * \param timeout maximum time allowed to preparse the media. If -1, the
+ * default "preparse-timeout" option will be used as a timeout. If 0, it will
+ * wait indefinitely. If > 0, the timeout will be used (in milliseconds).
  * \return -1 in case of error, 0 otherwise
  * \version LibVLC 3.0.0 or later
  */
 LIBVLC_API int
 libvlc_media_parse_with_options( libvlc_media_t *p_md,
-                                 libvlc_media_parse_flag_t parse_flag );
+                                 libvlc_media_parse_flag_t parse_flag,
+                                 int timeout );
+
+/**
+ * Stop the parsing of the media
+ *
+ * When the media parsing is stopped, the libvlc_MediaParsedChanged event will
+ * be sent with the libvlc_media_parsed_status_timeout status.
+ *
+ * \see libvlc_media_parse_with_options
+ *
+ * \param p_md media descriptor object
+ * \version LibVLC 3.0.0 or later
+ */
+LIBVLC_API void
+libvlc_media_parse_stop( libvlc_media_t *p_md );
 
 /**
  * Get Parsed status for media descriptor object.
  *
  * \see libvlc_MediaParsedChanged
+ * \see libvlc_media_parsed_status_t
  *
  * \param p_md media descriptor object
- * \return true if media object has been parsed otherwise it returns false
- *
- * \libvlc_return_bool
+ * \return a value of the libvlc_media_parsed_status_t enum
+ * \version LibVLC 3.0.0 or later
  */
-LIBVLC_API int
-   libvlc_media_is_parsed( libvlc_media_t *p_md );
+LIBVLC_API libvlc_media_parsed_status_t
+   libvlc_media_get_parsed_status( libvlc_media_t *p_md );
 
 /**
  * Sets media descriptor's user_data. user_data is specialized data
@@ -713,25 +744,6 @@ LIBVLC_API void
  * \param p_md media descriptor object
  */
 LIBVLC_API void *libvlc_media_get_user_data( libvlc_media_t *p_md );
-
-/**
- * Get media descriptor's elementary streams description
- *
- * Note, you need to call libvlc_media_parse() or play the media at least once
- * before calling this function.
- * Not doing this will result in an empty array.
- *
- * \deprecated Use libvlc_media_tracks_get instead
- *
- * \param p_md media descriptor object
- * \param tracks address to store an allocated array of Elementary Streams
- *        descriptions (must be freed by the caller) [OUT]
- *
- * \return the number of Elementary Streams
- */
-LIBVLC_DEPRECATED LIBVLC_API
-int libvlc_media_get_tracks_info( libvlc_media_t *p_md,
-                                  libvlc_media_track_info_t **tracks );
 
 /**
  * Get media descriptor's elementary streams description
@@ -794,6 +806,75 @@ void libvlc_media_tracks_release( libvlc_media_track_t **p_tracks,
  */
 LIBVLC_API
 libvlc_media_type_t libvlc_media_get_type( libvlc_media_t *p_md );
+
+/**
+ * Add a slave to the current media.
+ *
+ * A slave is an external input source that may contains an additional subtitle
+ * track (like a .srt) or an additional audio track (like a .ac3).
+ *
+ * \note This function must be called before the media is parsed (via
+ * libvlc_media_parse_with_options()) or before the media is played (via
+ * libvlc_media_player_play())
+ *
+ * \version LibVLC 3.0.0 and later.
+ *
+ * \param p_md media descriptor object
+ * \param i_type subtitle or audio
+ * \param i_priority from 0 (low priority) to 4 (high priority)
+ * \param psz_uri Uri of the slave (should contain a valid scheme).
+ *
+ * \return 0 on success, -1 on error.
+ */
+LIBVLC_API
+int libvlc_media_slaves_add( libvlc_media_t *p_md,
+                             libvlc_media_slave_type_t i_type,
+                             unsigned int i_priority,
+                             const char *psz_uri );
+
+/**
+ * Clear all slaves previously added by libvlc_media_slaves_add() or
+ * internally.
+ *
+ * \version LibVLC 3.0.0 and later.
+ *
+ * \param p_md media descriptor object
+ */
+LIBVLC_API
+void libvlc_media_slaves_clear( libvlc_media_t *p_md );
+
+/**
+ * Get a media descriptor's slave list
+ *
+ * The list will contain slaves parsed by VLC or previously added by
+ * libvlc_media_slaves_add(). The typical use case of this function is to save
+ * a list of slave in a database for a later use.
+ *
+ * \version LibVLC 3.0.0 and later.
+ *
+ * \see libvlc_media_slaves_add
+ *
+ * \param p_md media descriptor object
+ * \param ppp_slaves address to store an allocated array of slaves (must be
+ * freed with libvlc_media_slaves_release()) [OUT]
+ *
+ * \return the number of slaves (zero on error)
+ */
+LIBVLC_API
+unsigned int libvlc_media_slaves_get( libvlc_media_t *p_md,
+                                      libvlc_media_slave_t ***ppp_slaves );
+
+/**
+ * Release a media descriptor's slave list
+ *
+ * \version LibVLC 3.0.0 and later.
+ *
+ * \param pp_slaves slave array to release
+ * \param i_count number of elements in the array
+ */
+LIBVLC_API
+void libvlc_media_slaves_release( libvlc_media_slave_t **pp_slaves,
+                                  unsigned int i_count );
 
 /** @}*/
 

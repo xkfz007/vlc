@@ -39,6 +39,7 @@
 #include "mpeg/pes.h"
 #include "mpeg/ps.h"
 #include "vobsub.h"
+#include "subtitle_helper.h"
 
 /*****************************************************************************
  * Module descriptor
@@ -122,17 +123,14 @@ static int Open ( vlc_object_t *p_this )
     demux_sys_t *p_sys;
     char *psz_vobname, *s;
     int i_len;
+    uint64_t i_read_offset = 0;
 
-    if( ( s = stream_ReadLine( p_demux->s ) ) != NULL )
+    if( ( s = peek_Readline( p_demux->s, &i_read_offset ) ) != NULL )
     {
         if( !strcasestr( s, "# VobSub index file" ) )
         {
             msg_Dbg( p_demux, "this doesn't seem to be a vobsub file" );
             free( s );
-            if( stream_Seek( p_demux->s, 0 ) )
-            {
-                msg_Warn( p_demux, "failed to rewind" );
-            }
             return VLC_EGENERIC;
         }
         free( s );
@@ -188,7 +186,7 @@ static int Open ( vlc_object_t *p_this )
     if( i_len >= 4 ) memcpy( psz_vobname + i_len - 4, ".sub", 4 );
 
     /* open file */
-    p_sys->p_vobsub_stream = stream_UrlNew( p_demux, psz_vobname );
+    p_sys->p_vobsub_stream = vlc_stream_NewURL( p_demux, psz_vobname );
     if( p_sys->p_vobsub_stream == NULL )
     {
         msg_Err( p_demux, "couldn't open .sub Vobsub file: %s",
@@ -222,7 +220,7 @@ static void Close( vlc_object_t *p_this )
     demux_sys_t *p_sys = p_demux->p_sys;
 
     if( p_sys->p_vobsub_stream )
-        stream_Delete( p_sys->p_vobsub_stream );
+        vlc_stream_Delete( p_sys->p_vobsub_stream );
 
     /* Clean all subs from all tracks */
     for( int i = 0; i < p_sys->i_tracks; i++ )
@@ -243,6 +241,10 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
 
     switch( i_query )
     {
+        case DEMUX_CAN_SEEK:
+            *va_arg( args, bool * ) = true;
+            return VLC_SUCCESS;
+
         case DEMUX_GET_LENGTH:
             pi64 = (int64_t*)va_arg( args, int64_t * );
             *pi64 = (int64_t) p_sys->i_length;
@@ -379,7 +381,7 @@ static int Demux( demux_t *p_demux )
             if( i_size <= 0 ) i_size = 65535;   /* Invalid or EOF */
 
             /* Seek at the right place */
-            if( stream_Seek( p_sys->p_vobsub_stream, i_pos ) )
+            if( vlc_stream_Seek( p_sys->p_vobsub_stream, i_pos ) )
             {
                 msg_Warn( p_demux,
                           "cannot seek in the VobSub to the correct time %d", i_pos );
@@ -395,7 +397,7 @@ static int Demux( demux_t *p_demux )
             }
 
             /* read data */
-            i_read = stream_Read( p_sys->p_vobsub_stream, p_block->p_buffer, i_size );
+            i_read = vlc_stream_Read( p_sys->p_vobsub_stream, p_block->p_buffer, i_size );
             if( i_read <= 6 )
             {
                 block_Release( p_block );
@@ -409,6 +411,8 @@ static int Demux( demux_t *p_demux )
 
             /* demux this block */
             DemuxVobSub( p_demux, p_block );
+
+            block_Release( p_block );
 
             tk.i_current_subtitle++;
         }
@@ -429,7 +433,7 @@ static int TextLoad( text_t *txt, stream_t *s )
     /* load the complete file */
     for( ;; )
     {
-        char *psz = stream_ReadLine( s );
+        char *psz = vlc_stream_ReadLine( s );
         char **ppsz_new;
 
         if( psz == NULL || (n >= INT_MAX/sizeof(char *)) )

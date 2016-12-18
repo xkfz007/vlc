@@ -127,12 +127,10 @@ int module_get_score( const module_t *m )
  */
 const char *module_gettext (const module_t *m, const char *str)
 {
-    if (m->parent != NULL)
-        m = m->parent;
     if (unlikely(str == NULL || *str == '\0'))
         return "";
 #ifdef ENABLE_NLS
-    const char *domain = m->domain;
+    const char *domain = m->plugin->textdomain;
     return dgettext ((domain != NULL) ? domain : PACKAGE_NAME, str);
 #else
     (void)m;
@@ -174,7 +172,7 @@ static int module_load (vlc_object_t *obj, module_t *m,
 {
     int ret = VLC_SUCCESS;
 
-    if (module_Map (obj, m))
+    if (module_Map(obj, m->plugin))
         return VLC_EGENERIC;
 
     if (m->pf_activate != NULL)
@@ -203,7 +201,7 @@ static int module_load (vlc_object_t *obj, module_t *m,
  *
  * \param obj VLC object
  * \param capability capability, i.e. class of module
- * \param name name name of the module asked, if any
+ * \param name name of the module asked, if any
  * \param strict if true, do not fallback to plugin with a different name
  *                 but the same capability
  * \param probe module probe callback
@@ -239,7 +237,7 @@ module_t *vlc_module_load(vlc_object_t *obj, const char *capability,
     }
 
     module_t *module = NULL;
-    const bool b_force_backup = obj->b_force; /* FIXME: remove this */
+    const bool b_force_backup = obj->obj.force; /* FIXME: remove this */
     va_list args;
 
     va_start(args, probe);
@@ -264,7 +262,7 @@ module_t *vlc_module_load(vlc_object_t *obj, const char *capability,
         if (!strcasecmp ("none", shortcut))
             goto done;
 
-        obj->b_force = strict && strcasecmp ("any", shortcut);
+        obj->obj.force = strict && strcasecmp ("any", shortcut);
         for (ssize_t i = 0; i < total; i++)
         {
             module_t *cand = mods[i];
@@ -289,7 +287,7 @@ module_t *vlc_module_load(vlc_object_t *obj, const char *capability,
     /* None of the shortcuts matched, fall back to any module */
     if (!strict)
     {
-        obj->b_force = false;
+        obj->obj.force = false;
         for (ssize_t i = 0; i < total; i++)
         {
             module_t *cand = mods[i];
@@ -309,7 +307,7 @@ module_t *vlc_module_load(vlc_object_t *obj, const char *capability,
     }
 done:
     va_end (args);
-    obj->b_force = b_force_backup;
+    obj->obj.force = b_force_backup;
     module_list_free (mods);
     free (var);
 
@@ -414,35 +412,6 @@ bool module_exists (const char * psz_name)
 }
 
 /**
- * Get a pointer to a module_t that matches a shortcut.
- * This is a temporary hack for SD. Do not re-use (generally multiple modules
- * can have the same shortcut, so this is *broken* - use module_need()!).
- *
- * \param psz_shortcut shortcut of the module
- * \param psz_cap capability of the module
- * \return a pointer to the module or NULL in case of a failure
- */
-module_t *module_find_by_shortcut (const char *psz_shortcut)
-{
-    size_t count;
-    module_t **list = module_list_get (&count);
-
-    for (size_t i = 0; i < count; i++)
-    {
-        module_t *module = list[count];
-
-        for (size_t j = 0; j < module->i_shortcuts; j++)
-            if (!strcmp (module->pp_shortcuts[j], psz_shortcut))
-            {
-                module_list_free (list);
-                return module;
-            }
-    }
-    module_list_free (list);
-    return NULL;
-}
-
-/**
  * Get the configuration of a module
  *
  * \param module the module
@@ -451,8 +420,17 @@ module_t *module_find_by_shortcut (const char *psz_shortcut)
  */
 module_config_t *module_config_get( const module_t *module, unsigned *restrict psize )
 {
+    const vlc_plugin_t *plugin = module->plugin;
+
+    if (plugin->module != module)
+    {   /* For backward compatibility, pretend non-first modules have no
+         * configuration items. */
+        *psize = 0;
+        return NULL;
+    }
+
     unsigned i,j;
-    unsigned size = module->confsize;
+    size_t size = plugin->conf.size;
     module_config_t *config = malloc( size * sizeof( *config ) );
 
     assert( psize != NULL );
@@ -463,7 +441,7 @@ module_config_t *module_config_get( const module_t *module, unsigned *restrict p
 
     for( i = 0, j = 0; i < size; i++ )
     {
-        const module_config_t *item = module->p_config + i;
+        const module_config_t *item = plugin->conf.items + i;
         if( item->b_internal /* internal option */
          || item->b_removed /* removed option */ )
             continue;

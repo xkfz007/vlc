@@ -39,8 +39,8 @@
 
 #include <vlc_common.h>
 #include <vlc_plugin.h>
-
 #include <vlc_filter.h>
+#include <vlc_picture.h>
 #include "filter_picture.h"
 
 #define SIG_TEXT N_("Sharpen strength (0-2)")
@@ -68,7 +68,7 @@ vlc_module_begin ()
     set_help(SHARPEN_HELP)
     set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VFILTER )
-    set_capability( "video filter2", 0 )
+    set_capability( "video filter", 0 )
     add_float_with_range( "sharpen-sigma", 0.05, 0.0, 2.0,
         SIG_TEXT, SIG_LONGTEXT, false )
     add_shortcut( "sharpen" )
@@ -170,7 +170,6 @@ static void Destroy( vlc_object_t *p_this )
 static picture_t *Filter( filter_t *p_filter, picture_t *p_pic )
 {
     picture_t *p_outpic;
-    int i, j;
     uint8_t *restrict p_src = NULL;
     uint8_t *restrict p_out = NULL;
     int i_src_pitch;
@@ -181,8 +180,6 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_pic )
     const unsigned i_visible_lines = p_pic->p[Y_PLANE].i_visible_lines;
     const unsigned i_visible_pitch = p_pic->p[Y_PLANE].i_visible_pitch;
     const int sigma = var_GetFloat( p_filter, FILTER_PREFIX "sigma" ) * (1 << 20);
-
-    if( !p_pic ) return NULL;
 
     p_outpic = filter_NewPicture( p_filter );
     if( !p_outpic )
@@ -202,11 +199,11 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_pic )
 
     memcpy(p_out, p_src, i_visible_pitch);
 
-    for( i = 1; i < i_visible_lines - 1; i++ )
+    for( unsigned i = 1; i < i_visible_lines - 1; i++ )
     {
         p_out[i * i_out_pitch] = p_src[i * i_src_pitch];
 
-        for( j = 1; j < i_visible_pitch - 1; j++ )
+        for( unsigned j = 1; j < i_visible_pitch - 1; j++ )
         {
             pix = (p_src[(i - 1) * i_src_pitch + j - 1] * v1) +
                   (p_src[(i - 1) * i_src_pitch + j    ] * v1) +

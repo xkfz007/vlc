@@ -25,6 +25,7 @@
 # include "config.h"
 #endif
 
+#include <assert.h>
 #include <math.h>
 #include <vlc_common.h>
 #include <vlc_plugin.h>
@@ -441,16 +442,20 @@ static int TimeGet(audio_output_t *aout, mtime_t *restrict delay)
 {
     aout_sys_t *sys = aout->sys;
     pa_stream *s = sys->stream;
+    int ret = -1;
 
-    if (pa_stream_is_corked(s) > 0)
-        return -1; /* latency is irrelevant if corked */
-
-    mtime_t delta = vlc_pa_get_latency(aout, sys->context, s);
-    if (delta == VLC_TS_INVALID)
-        return -1;
-
-    *delay = delta;
-    return 0;
+    pa_threaded_mainloop_lock(sys->mainloop);
+    if (pa_stream_is_corked(s) <= 0)
+    {   /* latency is relevant only if not corked */
+        mtime_t delta = vlc_pa_get_latency(aout, sys->context, s);
+        if (delta != VLC_TS_INVALID)
+        {
+            *delay = delta;
+            ret = 0;
+        }
+    }
+    pa_threaded_mainloop_unlock(sys->mainloop);
+    return ret;
 }
 
 /* Memory free callback. The block_t address is in front of the data. */
@@ -647,6 +652,7 @@ static int StreamMove(audio_output_t *aout, const char *name)
         msg_Dbg(aout, "will connect to sink %s", name);
         free(sys->sink_force);
         sys->sink_force = strdup(name);
+        aout_DeviceReport(aout, name);
         return 0;
     }
 
@@ -667,6 +673,19 @@ static int StreamMove(audio_output_t *aout, const char *name)
 }
 
 static void Stop(audio_output_t *);
+
+static int strcmp_void(const void *a, const void *b)
+{
+    const char *const *entry = b;
+    return strcmp(a, *entry);
+}
+
+static const char *str_map(const char *key, const char *const table[][2],
+                           size_t n)
+{
+     const char **r = bsearch(key, table, n, sizeof (*table), strcmp_void);
+     return (r != NULL) ? r[1] : NULL;
+}
 
 /**
  * Create a PulseAudio playback stream, a.k.a. a sink input.
@@ -697,25 +716,34 @@ static int Start(audio_output_t *aout, audio_sample_format_t *restrict fmt)
             break;
         case VLC_CODEC_A52:
             fmt->i_format = VLC_CODEC_SPDIFL;
+            fmt->i_bytes_per_frame = 4;
+            fmt->i_frame_length = 1;
             encoding = PA_ENCODING_AC3_IEC61937;
-            ss.format = HAVE_FPU ? PA_SAMPLE_FLOAT32NE : PA_SAMPLE_S16NE;
+            ss.format = PA_SAMPLE_S16NE;
             break;
-        /*case VLC_CODEC_EAC3:
-            fmt->i_format = VLC_CODEC_SPDIFL FIXME;
+        case VLC_CODEC_EAC3:
+            fmt->i_format = VLC_CODEC_SPDIFL;
+            fmt->i_bytes_per_frame = 4;
+            fmt->i_frame_length = 1;
             encoding = PA_ENCODING_EAC3_IEC61937;
-            ss.format = HAVE_FPU ? PA_SAMPLE_FLOAT32NE : PA_SAMPLE_S16NE;
+            ss.format = PA_SAMPLE_S16NE;
             break;
-        case VLC_CODEC_MPGA:
+        /* case VLC_CODEC_MPGA:
             fmt->i_format = VLC_CODEC_SPDIFL FIXME;
             encoding = PA_ENCODING_MPEG_IEC61937;
-            ss.format = HAVE_FPU ? PA_SAMPLE_FLOAT32NE : PA_SAMPLE_S16NE;
+            ss.format = PA_SAMPLE_S16NE;
             break;*/
         case VLC_CODEC_DTS:
             fmt->i_format = VLC_CODEC_SPDIFL;
+            fmt->i_bytes_per_frame = 4;
+            fmt->i_frame_length = 1;
             encoding = PA_ENCODING_DTS_IEC61937;
-            ss.format = HAVE_FPU ? PA_SAMPLE_FLOAT32NE : PA_SAMPLE_S16NE;
+            ss.format = PA_SAMPLE_S16NE;
             break;
         default:
+            if (!AOUT_FMT_LINEAR(fmt) || aout_FormatNbChannels(fmt) == 0)
+                return VLC_EGENERIC;
+
             if (HAVE_FPU)
             {
                 fmt->i_format = VLC_CODEC_FL32;
@@ -730,52 +758,10 @@ static int Start(audio_output_t *aout, audio_sample_format_t *restrict fmt)
     }
 
     ss.rate = fmt->i_rate;
-    ss.channels = aout_FormatNbChannels(fmt);
+    ss.channels = fmt->i_channels;
     if (!pa_sample_spec_valid(&ss)) {
         msg_Err(aout, "unsupported sample specification");
         return VLC_EGENERIC;
-    }
-
-    /* Channel mapping (order defined in vlc_aout.h) */
-    struct pa_channel_map map;
-    map.channels = 0;
-
-    if (fmt->i_physical_channels & AOUT_CHAN_LEFT)
-        map.map[map.channels++] = PA_CHANNEL_POSITION_FRONT_LEFT;
-    if (fmt->i_physical_channels & AOUT_CHAN_RIGHT)
-        map.map[map.channels++] = PA_CHANNEL_POSITION_FRONT_RIGHT;
-    if (fmt->i_physical_channels & AOUT_CHAN_MIDDLELEFT)
-        map.map[map.channels++] = PA_CHANNEL_POSITION_SIDE_LEFT;
-    if (fmt->i_physical_channels & AOUT_CHAN_MIDDLERIGHT)
-        map.map[map.channels++] = PA_CHANNEL_POSITION_SIDE_RIGHT;
-    if (fmt->i_physical_channels & AOUT_CHAN_REARLEFT)
-        map.map[map.channels++] = PA_CHANNEL_POSITION_REAR_LEFT;
-    if (fmt->i_physical_channels & AOUT_CHAN_REARRIGHT)
-        map.map[map.channels++] = PA_CHANNEL_POSITION_REAR_RIGHT;
-    if (fmt->i_physical_channels & AOUT_CHAN_REARCENTER)
-        map.map[map.channels++] = PA_CHANNEL_POSITION_REAR_CENTER;
-    if (fmt->i_physical_channels & AOUT_CHAN_CENTER)
-    {
-        if (ss.channels == 1)
-            map.map[map.channels++] = PA_CHANNEL_POSITION_MONO;
-        else
-            map.map[map.channels++] = PA_CHANNEL_POSITION_FRONT_CENTER;
-    }
-    if (fmt->i_physical_channels & AOUT_CHAN_LFE)
-        map.map[map.channels++] = PA_CHANNEL_POSITION_LFE;
-    fmt->i_original_channels = fmt->i_physical_channels;
-
-    for (unsigned i = 0; map.channels < ss.channels; i++) {
-        map.map[map.channels++] = PA_CHANNEL_POSITION_AUX0 + i;
-        msg_Warn(aout, "mapping channel %"PRIu8" to AUX%u", map.channels, i);
-    }
-
-    if (!pa_channel_map_valid(&map)) {
-        msg_Err(aout, "unsupported channel map");
-        return VLC_EGENERIC;
-    } else {
-        const char *name = pa_channel_map_to_name(&map);
-        msg_Dbg(aout, "using %s channel map", (name != NULL) ? name : "?");
     }
 
     /* Stream parameters */
@@ -816,7 +802,6 @@ static int Start(audio_output_t *aout, audio_sample_format_t *restrict fmt)
         formatv[formatc]->encoding = encoding;
         pa_format_info_set_rate(formatv[formatc], ss.rate);
         pa_format_info_set_channels(formatv[formatc], ss.channels);
-        pa_format_info_set_channel_map(formatv[formatc], &map);
         formatc++;
 
         /* FIX flags are only permitted for PCM, and there is no way to pass
@@ -825,21 +810,87 @@ static int Start(audio_output_t *aout, audio_sample_format_t *restrict fmt)
                  | PA_STREAM_FIX_RATE
                  | PA_STREAM_FIX_CHANNELS);
     }
+    else
+    {
+        /* Channel mapping (order defined in vlc_aout.h) */
+        struct pa_channel_map map;
+        map.channels = 0;
 
-    /* Fallback to PCM */
-    formatv[formatc] = pa_format_info_new();
-    formatv[formatc]->encoding = PA_ENCODING_PCM;
-    pa_format_info_set_sample_format(formatv[formatc], ss.format);
-    pa_format_info_set_rate(formatv[formatc], ss.rate);
-    pa_format_info_set_channels(formatv[formatc], ss.channels);
-    pa_format_info_set_channel_map(formatv[formatc], &map);
-    formatc++;
+        if (fmt->i_physical_channels & AOUT_CHAN_LEFT)
+            map.map[map.channels++] = PA_CHANNEL_POSITION_FRONT_LEFT;
+        if (fmt->i_physical_channels & AOUT_CHAN_RIGHT)
+            map.map[map.channels++] = PA_CHANNEL_POSITION_FRONT_RIGHT;
+        if (fmt->i_physical_channels & AOUT_CHAN_MIDDLELEFT)
+            map.map[map.channels++] = PA_CHANNEL_POSITION_SIDE_LEFT;
+        if (fmt->i_physical_channels & AOUT_CHAN_MIDDLERIGHT)
+            map.map[map.channels++] = PA_CHANNEL_POSITION_SIDE_RIGHT;
+        if (fmt->i_physical_channels & AOUT_CHAN_REARLEFT)
+            map.map[map.channels++] = PA_CHANNEL_POSITION_REAR_LEFT;
+        if (fmt->i_physical_channels & AOUT_CHAN_REARRIGHT)
+            map.map[map.channels++] = PA_CHANNEL_POSITION_REAR_RIGHT;
+        if (fmt->i_physical_channels & AOUT_CHAN_REARCENTER)
+            map.map[map.channels++] = PA_CHANNEL_POSITION_REAR_CENTER;
+        if (fmt->i_physical_channels & AOUT_CHAN_CENTER)
+        {
+            if (ss.channels == 1)
+                map.map[map.channels++] = PA_CHANNEL_POSITION_MONO;
+            else
+                map.map[map.channels++] = PA_CHANNEL_POSITION_FRONT_CENTER;
+        }
+        if (fmt->i_physical_channels & AOUT_CHAN_LFE)
+            map.map[map.channels++] = PA_CHANNEL_POSITION_LFE;
+        fmt->i_original_channels = fmt->i_physical_channels;
+
+        static_assert(AOUT_CHAN_MAX == 9, "Missing channels");
+
+        for (unsigned i = 0; map.channels < ss.channels; i++) {
+            map.map[map.channels++] = PA_CHANNEL_POSITION_AUX0 + i;
+            msg_Warn(aout, "mapping channel %"PRIu8" to AUX%u", map.channels, i);
+        }
+
+        if (!pa_channel_map_valid(&map)) {
+            msg_Err(aout, "unsupported channel map");
+            return VLC_EGENERIC;
+        } else {
+            const char *name = pa_channel_map_to_name(&map);
+            msg_Dbg(aout, "using %s channel map", (name != NULL) ? name : "?");
+        }
+
+        /* PCM */
+        formatv[formatc] = pa_format_info_new();
+        formatv[formatc]->encoding = PA_ENCODING_PCM;
+        pa_format_info_set_sample_format(formatv[formatc], ss.format);
+        pa_format_info_set_rate(formatv[formatc], ss.rate);
+        pa_format_info_set_channels(formatv[formatc], ss.channels);
+        pa_format_info_set_channel_map(formatv[formatc], &map);
+        formatc++;
+    }
 
     /* Create a playback stream */
     pa_proplist *props = pa_proplist_new();
     if (likely(props != NULL))
+    {
         /* TODO: set other stream properties */
-        pa_proplist_sets (props, PA_PROP_MEDIA_ROLE, "video");
+        char *str = var_InheritString(aout, "role");
+        if (str != NULL)
+        {
+            static const char *const role_map[][2] = {
+                { "accessibility", "a11y"       },
+                { "animation",     "animation"  },
+                { "communication", "phone"      },
+                { "game",          "game"       },
+                { "music",         "music"      },
+                { "notification",  "event"      },
+                { "production",    "production" },
+                { "test",          "test"       },
+                { "video",         "video"      },
+            };
+            const char *role = str_map(str, role_map, ARRAY_SIZE(role_map));
+            if (role != NULL)
+                pa_proplist_sets(props, PA_PROP_MEDIA_ROLE, role);
+            free(str);
+       }
+    }
 
     pa_threaded_mainloop_lock(sys->mainloop);
     pa_stream *s = pa_stream_new_extended(sys->context, "audio stream",
@@ -870,7 +921,11 @@ static int Start(audio_output_t *aout, audio_sample_format_t *restrict fmt)
     if (pa_stream_connect_playback(s, sys->sink_force, &attr, flags,
                                    cvolume, NULL) < 0
      || stream_wait(s, sys->mainloop)) {
-        vlc_pa_error(aout, "stream connection failure", sys->context);
+        if (encoding != PA_ENCODING_INVALID)
+            vlc_pa_error(aout, "digital pass-through stream connection failure",
+                         sys->context);
+        else
+            vlc_pa_error(aout, "stream connection failure", sys->context);
         goto fail;
     }
     sys->volume_force = PA_VOLUME_INVALID;
@@ -878,21 +933,11 @@ static int Start(audio_output_t *aout, audio_sample_format_t *restrict fmt)
     free(sys->sink_force);
     sys->sink_force = NULL;
 
-    const struct pa_sample_spec *spec = pa_stream_get_sample_spec(s);
-    if (encoding != PA_ENCODING_INVALID) {
-        const pa_format_info *info = pa_stream_get_format_info(s);
-
-        assert (info != NULL);
-        if (pa_format_info_is_pcm (info)) {
-            msg_Dbg(aout, "digital pass-through not available");
-            fmt->i_format = HAVE_FPU ? VLC_CODEC_FL32 : VLC_CODEC_S16N;
-        } else {
-            msg_Dbg(aout, "digital pass-through enabled");
-            spec = NULL;
-        }
-    }
-    if (spec != NULL)
+    if (encoding == PA_ENCODING_INVALID)
+    {
+        const struct pa_sample_spec *spec = pa_stream_get_sample_spec(s);
         fmt->i_rate = spec->rate;
+    }
 
     stream_buffer_attr_cb(s, aout);
     stream_moved_cb(s, aout);

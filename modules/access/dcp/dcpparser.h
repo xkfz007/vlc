@@ -31,8 +31,8 @@
  */
 
 
-#ifndef _DCPPARSER_H
-#define _DCPPARSER_H
+#ifndef VLC_DCP_DCPPARSER_H_
+#define VLC_DCP_DCPPARSER_H_
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -112,7 +112,6 @@ public:
     XmlFile( demux_t * p_demux, string s_path):
     p_demux(p_demux), s_path(s_path),
     p_stream(NULL),
-    p_xml(NULL),
     p_xmlReader(NULL) {}
 
     virtual ~XmlFile( );
@@ -128,7 +127,6 @@ protected:
     string       s_path;
     stream_t     *p_stream;
 
-    xml_t        *p_xml;
     xml_reader_t *p_xmlReader;
 
     int OpenXml();
@@ -397,4 +395,4 @@ private:
     string s_path;
 };
 
-#endif /* _DCPPARSER_H */
+#endif /* include-guard */

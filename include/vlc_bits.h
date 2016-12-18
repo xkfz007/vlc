@@ -22,23 +22,15 @@
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
-
 #ifndef VLC_BITS_H
 #define VLC_BITS_H 1
 
 #include <vlc_common.h>
-#include <vlc_block.h>
 
 /**
  * \file
  * This file defines functions, structures for handling streams of bits in vlc
  */
-
-typedef struct bo_t
-{
-    block_t     *b;
-    size_t      basesize;
-} bo_t;
 
 typedef struct bs_s
 {
@@ -47,14 +39,28 @@ typedef struct bs_s
     uint8_t *p_end;
 
     ssize_t  i_left;    /* i_count number of available bits */
+    bool     b_read_only;
+
+     /* forward read modifier (p_start, p_end, p_fwpriv, count) */
+    uint8_t *(*pf_forward)(uint8_t *, uint8_t *, void *, size_t);
+    void    *p_fwpriv;
 } bs_t;
 
-static inline void bs_init( bs_t *s, const void *p_data, size_t i_data )
+static inline void bs_write_init( bs_t *s, void *p_data, size_t i_data )
 {
-    s->p_start = (void *)p_data;
+    s->p_start = (uint8_t *)p_data;
     s->p       = s->p_start;
     s->p_end   = s->p_start + i_data;
     s->i_left  = 8;
+    s->b_read_only = false;
+    s->p_fwpriv = NULL;
+    s->pf_forward = NULL;
+}
+
+static inline void bs_init( bs_t *s, const void *p_data, size_t i_data )
+{
+    bs_write_init( s, (void*) p_data, i_data );
+    s->b_read_only = true;
 }
 
 static inline int bs_pos( const bs_t *s )
@@ -62,10 +68,21 @@ static inline int bs_pos( const bs_t *s )
     return( 8 * ( s->p - s->p_start ) + 8 - s->i_left );
 }
 
+static inline int bs_remain( const bs_t *s )
+{
+    if( s->p >= s->p_end )
+        return 0;
+    else
+    return( 8 * ( s->p_end - s->p ) - 8 + s->i_left );
+}
+
 static inline int bs_eof( const bs_t *s )
 {
     return( s->p >= s->p_end ? 1: 0 );
 }
+
+#define bs_forward( s, i ) \
+    s->p = s->pf_forward ? s->pf_forward( s->p, s->p_end, s->p_fwpriv, i ) : s->p + i
 
 static inline uint32_t bs_read( bs_t *s, int i_count )
 {
@@ -96,7 +113,7 @@ static inline uint32_t bs_read( bs_t *s, int i_count )
             s->i_left -= i_count;
             if( s->i_left == 0 )
             {
-                s->p++;
+                bs_forward( s, 1 );
                 s->i_left = 8;
             }
             return( i_result );
@@ -106,7 +123,7 @@ static inline uint32_t bs_read( bs_t *s, int i_count )
             /* less in the buffer than requested */
            i_result |= (*s->p&i_mask[s->i_left]) << -i_shr;
            i_count  -= s->i_left;
-           s->p++;
+           bs_forward( s, 1);
            s->i_left = 8;
         }
     }
@@ -124,7 +141,7 @@ static inline uint32_t bs_read1( bs_t *s )
         i_result = ( *s->p >> s->i_left )&0x01;
         if( s->i_left == 0 )
         {
-            s->p++;
+            bs_forward( s, 1 );
             s->i_left = 8;
         }
         return i_result;
@@ -147,13 +164,16 @@ static inline void bs_skip( bs_t *s, ssize_t i_count )
     {
         const int i_bytes = ( -s->i_left + 8 ) / 8;
 
-        s->p += i_bytes;
+        bs_forward( s, i_bytes );
         s->i_left += 8 * i_bytes;
     }
 }
 
 static inline void bs_write( bs_t *s, int i_count, uint32_t i_bits )
 {
+    if( s->b_read_only )
+        return;
+
     while( i_count > 0 )
     {
         if( s->p >= s->p_end )
@@ -174,10 +194,15 @@ static inline void bs_write( bs_t *s, int i_count, uint32_t i_bits )
         s->i_left--;
         if( s->i_left == 0 )
         {
-            s->p++;
+            bs_forward( s, 1 );
             s->i_left = 8;
         }
     }
+}
+
+static inline bool bs_aligned( bs_t *s )
+{
+    return s->i_left % 8 == 0;
 }
 
 static inline void bs_align( bs_t *s )
@@ -199,129 +224,32 @@ static inline void bs_align_0( bs_t *s )
 
 static inline void bs_align_1( bs_t *s )
 {
-    while( s->i_left != 8 )
+    while( !s->b_read_only && s->i_left != 8 )
     {
         bs_write( s, 1, 1 );
     }
 }
 
-static inline bool bo_init(bo_t *p_bo, int i_size)
+/* Read unsigned Exp-Golomb code */
+static inline uint_fast32_t bs_read_ue( bs_t * bs )
 {
-    p_bo->b = block_Alloc(i_size);
-    if (!p_bo->b)
-        return false;
+    unsigned i = 0;
 
-    p_bo->b->i_buffer = 0;
-    p_bo->basesize = i_size;
+    while( bs_read1( bs ) == 0 && bs->p < bs->p_end && i < 31 )
+        i++;
 
-    return true;
+    return (1U << i) - 1 + bs_read( bs, i );
 }
 
-static inline void bo_free(bo_t *p_bo)
+/* Read signed Exp-Golomb code */
+static inline int_fast32_t bs_read_se( bs_t *s )
 {
-    if(!p_bo)
-        return;
-    if(p_bo->b)
-        block_Release(p_bo->b);
-    free(p_bo);
+    uint_fast32_t val = bs_read_ue( s );
+
+    return (val & 0x01) ? (int_fast32_t)((val + 1) / 2)
+                        : -(int_fast32_t)(val / 2);
 }
 
-static inline int bo_extend(bo_t *p_bo, size_t i_total)
-{
-    if(!p_bo->b)
-        return false;
-    const size_t i_size = p_bo->b->i_size - (p_bo->b->p_buffer - p_bo->b->p_start);
-    if (i_total >= i_size)
-    {
-        int i_growth = p_bo->basesize;
-        while(i_total >= i_size + i_growth)
-            i_growth += p_bo->basesize;
-
-        int i = p_bo->b->i_buffer; /* Realloc would set payload size == buffer size */
-        p_bo->b = block_Realloc(p_bo->b, 0, i_size + i_growth);
-        if (!p_bo->b)
-            return false;
-        p_bo->b->i_buffer = i;
-    }
-    return true;
-}
-
-#define BO_SET_DECL_S(func, handler, type) static inline bool func(bo_t *p_bo, size_t i_offset, type val)\
-    {\
-        if (!bo_extend(p_bo, i_offset + sizeof(type)))\
-            return false;\
-        handler(&p_bo->b->p_buffer[i_offset], val);\
-        return true;\
-    }
-
-#define BO_ADD_DECL_S(func, handler, type) static inline bool func(bo_t *p_bo, type val)\
-    {\
-        if(!p_bo->b || !handler(p_bo, p_bo->b->i_buffer, val))\
-            return false;\
-        p_bo->b->i_buffer += sizeof(type);\
-        return true;\
-    }
-
-#define BO_FUNC_DECL(suffix, handler, type ) \
-    BO_SET_DECL_S( bo_set_ ## suffix ## be, handler ## BE, type )\
-    BO_SET_DECL_S( bo_set_ ## suffix ## le, handler ## LE, type )\
-    BO_ADD_DECL_S( bo_add_ ## suffix ## be, bo_set_ ## suffix ## be, type )\
-    BO_ADD_DECL_S( bo_add_ ## suffix ## le, bo_set_ ## suffix ## le, type )
-
-static inline bool bo_set_8(bo_t *p_bo, size_t i_offset, uint8_t i)
-{
-    if (!bo_extend(p_bo, i_offset + 1))
-        return false;
-    p_bo->b->p_buffer[i_offset] = i;
-    return true;
-}
-
-static inline bool bo_add_8(bo_t *p_bo, uint8_t i)
-{
-    if(!p_bo->b || !bo_set_8( p_bo, p_bo->b->i_buffer, i ))
-        return false;
-    p_bo->b->i_buffer++;
-    return true;
-}
-
-/* declares all bo_[set,add]_[16,32,64] */
-BO_FUNC_DECL( 16, SetW,  uint16_t )
-BO_FUNC_DECL( 32, SetDW, uint32_t )
-BO_FUNC_DECL( 64, SetQW, uint64_t )
-
-#undef BO_FUNC_DECL
-#undef BO_SET_DECL_S
-#undef BO_ADD_DECL_S
-
-static inline bool bo_add_24be(bo_t *p_bo, uint32_t i)
-{
-    if(!p_bo->b || !bo_extend(p_bo, p_bo->b->i_buffer + 3))
-        return false;
-    p_bo->b->p_buffer[p_bo->b->i_buffer++] = ((i >> 16) & 0xff);
-    p_bo->b->p_buffer[p_bo->b->i_buffer++] = ((i >> 8) & 0xff);
-    p_bo->b->p_buffer[p_bo->b->i_buffer++] = (i & 0xff);
-    return true;
-}
-
-static inline void bo_swap_32be (bo_t *p_bo, size_t i_pos, uint32_t i)
-{
-    if (!p_bo->b || p_bo->b->i_buffer < i_pos + 4)
-        return;
-    p_bo->b->p_buffer[i_pos    ] = (i >> 24)&0xff;
-    p_bo->b->p_buffer[i_pos + 1] = (i >> 16)&0xff;
-    p_bo->b->p_buffer[i_pos + 2] = (i >>  8)&0xff;
-    p_bo->b->p_buffer[i_pos + 3] = (i      )&0xff;
-}
-
-static inline bool bo_add_mem(bo_t *p_bo, size_t i_size, const void *p_mem)
-{
-    if(!p_bo->b || !bo_extend(p_bo, p_bo->b->i_buffer + i_size))
-        return false;
-    memcpy(&p_bo->b->p_buffer[p_bo->b->i_buffer], p_mem, i_size);
-    p_bo->b->i_buffer += i_size;
-    return true;
-}
-
-#define bo_add_fourcc(p_bo, fcc) bo_add_mem(p_bo, 4, fcc)
+#undef bs_forward
 
 #endif

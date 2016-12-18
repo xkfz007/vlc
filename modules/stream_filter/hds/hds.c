@@ -24,8 +24,6 @@
 # include "config.h"
 #endif
 
-#include <limits.h> /* INT_MAX */
-
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_stream.h>
@@ -144,7 +142,6 @@ struct stream_sys_t
     size_t       flv_header_len;
     size_t       flv_header_bytes_sent;
     uint64_t     duration_seconds;
-    uint64_t     playback_offset;
 
     bool         live;
     bool         closed;
@@ -176,7 +173,6 @@ typedef struct _manifest {
     bootstrap_info bootstraps[MAX_BOOTSTRAP_INFO];
     media_info medias[MAX_MEDIA_ELEMENTS];
     xml_reader_t *vlc_reader;
-    xml_t *vlc_xml;
 } manifest_t;
 
 static unsigned char flv_header_bytes[] = {
@@ -212,13 +208,11 @@ vlc_module_begin()
     set_subcategory( SUBCAT_INPUT_STREAM_FILTER )
     set_description( N_("HTTP Dynamic Streaming") )
     set_shortname( "Dynamic Streaming")
-    add_shortcut( "hds" )
     set_capability( "stream_filter", 30 )
     set_callbacks( Open, Close )
 vlc_module_end()
 
-static int   Read( stream_t *, void *, unsigned );
-static int   Peek( stream_t *, const uint8_t **, unsigned );
+static ssize_t Read( stream_t *, void *, size_t );
 static int   Control( stream_t *, int , va_list );
 
 static inline bool isFQUrl( const char* url )
@@ -230,7 +224,7 @@ static inline bool isFQUrl( const char* url )
 static bool isHDS( stream_t *s )
 {
     const char *peek;
-    int i_size = stream_Peek( s->p_source, (const uint8_t**) &peek, 200 );
+    int i_size = vlc_stream_Peek( s->p_source, (const uint8_t**) &peek, 200 );
     if( i_size < 200 )
         return false;
 
@@ -805,7 +799,7 @@ static uint8_t* download_chunk( stream_t *s,
 
     msg_Info(s, "Downloading fragment %s",  fragment_url );
 
-    stream_t* download_stream = stream_UrlNew( s, fragment_url );
+    stream_t* download_stream = vlc_stream_NewURL( s, fragment_url );
     if( ! download_stream )
     {
         msg_Err(s, "Failed to download fragment %s", fragment_url );
@@ -831,8 +825,10 @@ static uint8_t* download_chunk( stream_t *s,
         return NULL;
     }
 
-    int read = stream_Read( download_stream, data,
+    int read = vlc_stream_Read( download_stream, data,
                             size );
+    if( read < 0 )
+        read = 0;
     chunk->data_len = read;
 
     if( read < size )
@@ -850,7 +846,7 @@ static uint8_t* download_chunk( stream_t *s,
         chunk->failed = false;
     }
 
-    stream_Delete( download_stream );
+    vlc_stream_Delete( download_stream );
     return data;
 }
 
@@ -1140,7 +1136,7 @@ static void* live_thread( void* p )
     while( ! sys->closed )
     {
         last_dl_start_time = mdate();
-        stream_t* download_stream = stream_UrlNew( p_this, abst_url );
+        stream_t* download_stream = vlc_stream_NewURL( p_this, abst_url );
         if( ! download_stream )
         {
             msg_Err( p_this, "Failed to download abst %s", abst_url );
@@ -1149,7 +1145,7 @@ static void* live_thread( void* p )
         {
             int64_t size = stream_Size( download_stream );
             uint8_t* data = malloc( size );
-            int read = stream_Read( download_stream, data,
+            int read = vlc_stream_Read( download_stream, data,
                                     size );
             if( read < size )
             {
@@ -1168,7 +1164,7 @@ static void* live_thread( void* p )
 
             free( data );
 
-            stream_Delete( download_stream );
+            vlc_stream_Delete( download_stream );
         }
 
         mwait( last_dl_start_time + ( ((int64_t)hds_stream->fragment_runs[hds_stream->fragment_run_count-1].fragment_duration) * 1000000LL) / ((int64_t)hds_stream->afrt_timescale) );
@@ -1186,14 +1182,8 @@ static int init_Manifest( stream_t *s, manifest_t *m )
 {
     memset(m, 0, sizeof(*m));
     stream_t *st = s->p_source;
-    m->vlc_xml = xml_Create( st );
-    if( !m->vlc_xml )
-    {
-        msg_Err( s, "Failed to open XML parser" );
-        return VLC_EGENERIC;
-    }
 
-    m->vlc_reader = xml_ReaderCreate( m->vlc_xml, st );
+    m->vlc_reader = xml_ReaderCreate( st, st );
     if( !m->vlc_reader )
     {
         msg_Err( s, "Failed to open source for parsing" );
@@ -1226,8 +1216,6 @@ static void cleanup_Manifest( manifest_t *m )
 
     if( m->vlc_reader )
         xml_ReaderDelete( m->vlc_reader );
-    if( m->vlc_xml )
-        xml_Delete( m->vlc_xml );
 }
 
 static void cleanup_threading( hds_stream_t *stream )
@@ -1638,20 +1626,18 @@ static int Open( vlc_object_t *p_this )
     stream_t *s = (stream_t*)p_this;
     stream_sys_t *p_sys;
 
-    if( !isHDS( s ) )
+    if( !isHDS( s ) || s->psz_url == NULL )
         return VLC_EGENERIC;
 
-    msg_Info( p_this, "HTTP Dynamic Streaming (%s)", s->psz_path );
+    msg_Info( p_this, "HTTP Dynamic Streaming (%s)", s->psz_url );
 
     s->p_sys = p_sys = calloc( 1, sizeof(*p_sys ) );
     if( unlikely( p_sys == NULL ) )
         return VLC_ENOMEM;
 
-    char *uri_without_query = NULL;
-    size_t pathlen = strcspn( s->psz_path, "?" );
-    if( unlikely( ( pathlen > INT_MAX ) ||
-        ( asprintf( &uri_without_query, "%s://%.*s", s->psz_access,
-                    (int)pathlen, s->psz_path ) < 0 ) ) )
+    char *uri_without_query = strndup( s->psz_url,
+                                       strcspn( s->psz_url, "?" ) );
+    if( uri_without_query == NULL )
     {
         free( p_sys );
         return VLC_ENOMEM;
@@ -1674,7 +1660,7 @@ static int Open( vlc_object_t *p_this )
     }
 
     s->pf_read = Read;
-    s->pf_peek = Peek;
+    s->pf_seek = NULL;
     s->pf_control = Control;
 
     if( vlc_clone( &p_sys->dl_thread, download_thread, s, VLC_THREAD_PRIORITY_INPUT ) )
@@ -1706,7 +1692,7 @@ static void Close( vlc_object_t *p_this )
 
     // TODO: Change here for selectable stream
     hds_stream_t *stream = vlc_array_count(p_sys->hds_streams) ?
-        s->p_sys->hds_streams->pp_elems[0] : NULL;
+        p_sys->hds_streams->pp_elems[0] : NULL;
 
     p_sys->closed = true;
     if (stream)
@@ -1724,7 +1710,7 @@ static void Close( vlc_object_t *p_this )
 }
 
 static int send_flv_header( hds_stream_t *stream, stream_sys_t* p_sys,
-                            void* buffer, unsigned i_read, bool peek )
+                            void* buffer, unsigned i_read )
 {
     if ( !p_sys->flv_header )
     {
@@ -1740,19 +1726,14 @@ static int send_flv_header( hds_stream_t *stream, stream_sys_t* p_sys,
 
     memcpy( buffer, p_sys->flv_header + p_sys->flv_header_bytes_sent, to_be_read );
 
-    if( ! peek )
-    {
-        p_sys->flv_header_bytes_sent += to_be_read;
-    }
+    p_sys->flv_header_bytes_sent += to_be_read;
     return to_be_read;
 }
 
 static unsigned read_chunk_data(
     vlc_object_t* p_this,
     uint8_t* buffer, unsigned read_len,
-    hds_stream_t* stream,
-    bool* eof
-    )
+    hds_stream_t* stream )
 {
     stream_t* s = (stream_t*) p_this;
     stream_sys_t* sys = s->p_sys;
@@ -1760,10 +1741,8 @@ static unsigned read_chunk_data(
     uint8_t* buffer_start = buffer;
     bool dl = false;
 
-    if( chunk && chunk->eof && chunk->mdat_pos >= chunk->mdat_len ) {
-        *eof = true;
+    if( chunk && chunk->eof && chunk->mdat_pos >= chunk->mdat_len )
         return 0;
-    }
 
     while( chunk && chunk->data && read_len > 0 && ! (chunk->eof && chunk->mdat_pos >= chunk->mdat_len ) )
     {
@@ -1787,11 +1766,6 @@ static unsigned read_chunk_data(
 
         if( ! sys->live && (chunk->mdat_pos >= chunk->mdat_len || chunk->failed) )
         {
-            if( chunk->eof )
-            {
-                *eof = true;
-            }
-
             /* make sure there is at least one chunk in the queue */
             if( ! chunk->next && ! chunk->eof )
             {
@@ -1855,78 +1829,22 @@ static inline bool header_unfinished( stream_sys_t *p_sys )
     return p_sys->flv_header_bytes_sent < p_sys->flv_header_len;
 }
 
-static int Read( stream_t *s, void *buffer, unsigned i_read )
+static ssize_t Read( stream_t *s, void *buffer, size_t i_read )
 {
     stream_sys_t *p_sys = s->p_sys;
 
     if ( vlc_array_count( p_sys->hds_streams ) == 0 )
         return 0;
-
-    // TODO: change here for selectable stream
-    hds_stream_t *stream = s->p_sys->hds_streams->pp_elems[0];
-    int length = 0;
-
-    uint8_t *buffer_uint8 = (uint8_t*) buffer;
-
-    if ( header_unfinished( p_sys ) )
-    {
-        unsigned hdr_bytes = send_flv_header( stream, p_sys, buffer, i_read, false );
-        length += hdr_bytes;
-        i_read -= hdr_bytes;
-        buffer_uint8 += hdr_bytes;
-    }
-
-    bool eof = false;
-    while( i_read > 0 && ! eof )
-    {
-        int tmp_length = read_chunk_data( (vlc_object_t*)s, buffer_uint8, i_read, stream, &eof );
-        buffer_uint8 += tmp_length;
-        i_read -= tmp_length;
-        length += tmp_length;
-        p_sys->playback_offset += tmp_length;
-    }
-
-    return length;
-}
-
-static int Peek( stream_t *s, const uint8_t **pp_peek, unsigned i_peek )
-{
-    stream_sys_t *p_sys = s->p_sys;
-
-    if ( vlc_array_count( p_sys->hds_streams ) == 0 )
+    if( unlikely(i_read == 0) )
         return 0;
 
     // TODO: change here for selectable stream
     hds_stream_t *stream = p_sys->hds_streams->pp_elems[0];
 
-    if ( !p_sys->flv_header )
-    {
-        initialize_header_and_metadata( p_sys, stream );
-    }
+    if ( header_unfinished( p_sys ) )
+        return send_flv_header( stream, p_sys, buffer, i_read );
 
-    if( header_unfinished( p_sys ) )
-    {
-        *pp_peek = p_sys->flv_header + p_sys->flv_header_bytes_sent;
-        return p_sys->flv_header_len - p_sys->flv_header_bytes_sent;
-    }
-
-    if( stream->chunks_head && ! stream->chunks_head->failed && stream->chunks_head->data )
-    {
-        // TODO: change here for selectable stream
-        chunk_t* chunk = stream->chunks_head;
-        *pp_peek = chunk->mdat_data + chunk->mdat_pos;
-        if( chunk->mdat_len - chunk->mdat_pos < i_peek )
-        {
-            return chunk->mdat_len - chunk->mdat_pos;
-        }
-        else
-        {
-            return i_peek;
-        }
-    } else
-    {
-        return 0;
-    }
+    return read_chunk_data( (vlc_object_t*)s, buffer, i_read, stream );
 }
 
 static int Control( stream_t *s, int i_query, va_list args )
@@ -1947,9 +1865,6 @@ static int Control( stream_t *s, int i_query, va_list args )
             *va_arg (args, int64_t *) = INT64_C(1000) *
                 var_InheritInteger(s, "network-caching");
              break;
-        case STREAM_GET_POSITION:
-            *(va_arg (args, uint64_t *)) = s->p_sys->playback_offset;
-            break;
         case STREAM_GET_SIZE:
             *(va_arg (args, uint64_t *)) = get_stream_size(s);
             break;

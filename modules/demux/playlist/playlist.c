@@ -104,12 +104,12 @@ vlc_module_begin ()
         set_description( N_("RAM playlist import") )
         add_shortcut( "playlist", "ram-open" )
         set_capability( "demux", 10 )
-        set_callbacks( Import_RAM, Close_RAM )
+        set_callbacks( Import_RAM, NULL )
     add_submodule ()
         set_description( N_("PLS playlist import") )
         add_shortcut( "playlist", "pls-open" )
         set_capability( "demux", 10 )
-        set_callbacks( Import_PLS, Close_PLS )
+        set_callbacks( Import_PLS, NULL )
     add_submodule ()
         set_description( N_("B4S playlist import") )
         add_shortcut( "playlist", "b4s-open", "shout-b4s" )
@@ -199,80 +199,87 @@ int Control(demux_t *demux, int query, va_list args)
             *pb_bool = true;
             return VLC_SUCCESS;
         }
+        case DEMUX_GET_META:
+        {
+            return VLC_SUCCESS;
+        }
+        case DEMUX_HAS_UNSUPPORTED_META:
+        {
+            *(va_arg( args, bool * )) = false;
+            return VLC_SUCCESS;
+        }
     }
     return VLC_EGENERIC;
 }
 
 input_item_t * GetCurrentItem(demux_t *p_demux)
 {
-    input_thread_t *p_input_thread = demux_GetParentInput( p_demux );
-    input_item_t *p_current_input = input_GetItem( p_input_thread );
+    input_item_t *p_current_input = input_GetItem( p_demux->p_input );
     vlc_gc_incref(p_current_input);
-    vlc_object_release(p_input_thread);
     return p_current_input;
 }
 
 /**
- * Find directory part of the path to the playlist file, in case of
- * relative paths inside
+ * Computes the base URL.
+ *
+ * Rebuilds the base URL for the playlist.
  */
-char *FindPrefix( demux_t *p_demux )
+char *FindPrefix(demux_t *p_demux)
 {
-    char *psz_url;
+    char *url;
 
-    if( asprintf( &psz_url, "%s://%s", p_demux->psz_access,
-                  p_demux->psz_location ) == -1 )
-        return NULL;
-
-    char *psz_file = strrchr( psz_url, '/' );
-    assert( psz_file != NULL );
-    psz_file[1] = '\0';
-
-    return psz_url;
+    if (unlikely(asprintf(&url, "%s://%s", p_demux->psz_access,
+                          p_demux->psz_location) == -1))
+        url = NULL;
+    return url;
 }
 
 /**
- * Add the directory part of the playlist file to the start of the
- * mrl, if the mrl is a relative file path
+ * Resolves a playlist location.
+ *
+ * Resolves a resource location within the playlist relative to the playlist
+ * base URL.
  */
-char *ProcessMRL( const char *psz_mrl, const char *psz_prefix )
+char *ProcessMRL(const char *str, const char *base)
 {
-    /* Check for a protocol name.
-     * for URL, we should look for "://"
-     * for MRL (Media Resource Locator) ([[<access>][/<demux>]:][<source>]),
-     * we should look for ":", so we end up looking simply for ":"
-     * PB: on some file systems, ':' are valid characters though */
-
-    /* Simple cases first */
-    if( !psz_mrl || !*psz_mrl )
+    if (str == NULL)
         return NULL;
-    if( !psz_prefix || !*psz_prefix )
-        goto uri;
 
-    /* Check if the line specifies an absolute path */
-    /* FIXME: that's wrong if the playlist is not a local file */
-    if( *psz_mrl == DIR_SEP_CHAR )
-        goto uri;
-#if defined( _WIN32 ) || defined( __OS2__ )
-    /* Drive letter (this assumes URL scheme are not a single character) */
-    if( isalpha((unsigned char)psz_mrl[0]) && psz_mrl[1] == ':' )
-        goto uri;
+#if (DIR_SEP_CHAR == '\\')
+    /* UNC path prefix? */
+    if (strncmp(str, "\\\\", 2) == 0
+    /* Drive letter prefix? */
+     || (isalpha((unsigned char)str[0]) && str[1] == ':'))
+        /* Assume this an absolute file path - usually true */
+        return vlc_path2uri(str, NULL);
+    /* TODO: drive-relative path: if (str[0] == '\\') */
 #endif
-    if( strstr( psz_mrl, "://" ) )
-        return strdup( psz_mrl );
 
-    /* This a relative path, prepend the prefix */
-    char *ret;
-    char *postfix = encode_URI_component( psz_mrl );
-    /* FIXME: postfix may not be encoded correctly (esp. slashes) */
-    if( postfix == NULL
-     || asprintf( &ret, "%s%s", psz_prefix, postfix ) == -1 )
-        ret = NULL;
-    free( postfix );
-    return ret;
+    /* The base URL is always an URL: it is the URL of the playlist.
+     *
+     * However it is not always known if the input string is a valid URL, a
+     * broken URL or a local file path. As a rule, if it looks like a valid
+     * URL, it must be treated as such, since most playlist formats use URLs.
+     *
+     * There are a few corner cases file paths that look like an URL but whose
+     * URL representation does not match, notably when they contain a
+     * percentage sign, a colon, a hash or a question mark. Luckily, they are
+     * rather exceptional (and can be encoded as URL to make the playlist
+     * work properly).
+     *
+     * If the input is not a valid URL, then we try to fix it up. It works in
+     * all cases for URLs with incorrectly encoded segments, such as URLs with
+     * white spaces or non-ASCII Unicode code points. It also works in most
+     * cases where the input is a Unix-style file path, but not all.
+     * It fails miserably if the playlist character encoding is misdetected.
+     */
+    char *rel = vlc_uri_fixup(str);
+    if (rel != NULL)
+        str = rel;
 
-uri:
-    return vlc_path2uri( psz_mrl, NULL );
+    char *abs = vlc_uri_resolve(base, str);
+    free(rel);
+    return abs;
 }
 
 /**

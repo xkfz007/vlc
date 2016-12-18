@@ -27,19 +27,17 @@
 #ifndef VLC_MESSAGES_H_
 #define VLC_MESSAGES_H_
 
-/**
- * \file
- * This file defines structures and functions to handle messages and statistics gathering
- */
-
 #include <stdarg.h>
 
 /**
- * \defgroup messages Messages
- * This library provides basic functions for threads to interact with user
- * interface, such as message output.
+ * \defgroup messages Logging
+ * \brief Message logs
+ *
+ * Functions for modules to emit log messages.
  *
  * @{
+ * \file
+ * Logging functions
  */
 
 /** Message types */
@@ -56,13 +54,14 @@ enum vlc_log_type
  */
 typedef struct vlc_log_t
 {
-    uintptr_t   i_object_id; /**< Emitter (temporaly) unique object ID or 0 */
+    uintptr_t   i_object_id; /**< Emitter (temporarily) unique object ID or 0 */
     const char *psz_object_type; /**< Emitter object type name */
     const char *psz_module; /**< Emitter module (source code) */
     const char *psz_header; /**< Additional header (used by VLM media) */
     const char *file; /**< Source code file name or NULL */
     int line; /**< Source code file line number or -1 */
     const char *func; /**< Source code calling function name or NULL */
+    unsigned long tid; /**< Emitter thread ID */
 } vlc_log_t;
 
 VLC_API void vlc_Log(vlc_object_t *obj, int prio, const char *module,

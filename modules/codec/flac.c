@@ -103,6 +103,7 @@ static void CloseEncoder ( vlc_object_t * );
 #endif
 
 static block_t *DecodeBlock( decoder_t *, block_t ** );
+static void Flush( decoder_t * );
 
 /*****************************************************************************
  * Module descriptor
@@ -178,6 +179,9 @@ DecoderWriteCallback( const FLAC__StreamDecoder *decoder,
         return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
 
     const unsigned char *pi_reorder = ppi_reorder[p_dec->fmt_out.audio.i_channels];
+
+    if( decoder_UpdateAudioFormat( p_dec ) )
+        return FLAC__STREAM_DECODER_WRITE_STATUS_CONTINUE;
 
     p_sys->p_aout_buffer =
         decoder_NewAudioBuffer( p_dec, frame->header.blocksize );
@@ -358,9 +362,7 @@ static int OpenDecoder( vlc_object_t *p_this )
 
     /* Set callbacks */
     p_dec->pf_decode_audio = DecodeBlock;
-
-    /* */
-    p_dec->b_need_packetized = true;
+    p_dec->pf_flush        = Flush;
 
     return VLC_SUCCESS;
 }
@@ -494,6 +496,16 @@ static void decoder_state_error( decoder_t *p_dec,
     }
 }
 
+/*****************************************************************************
+ * Flush:
+ *****************************************************************************/
+static void Flush( decoder_t *p_dec )
+{
+    decoder_sys_t *p_sys = p_dec->p_sys;
+
+    date_Set( &p_sys->end_date, 0 );
+}
+
 /****************************************************************************
  * DecodeBlock: the whole thing
  ****************************************************************************/
@@ -503,10 +515,15 @@ static block_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
 
     if( !pp_block || !*pp_block )
         return NULL;
-    if( (*pp_block)->i_flags&(BLOCK_FLAG_DISCONTINUITY|BLOCK_FLAG_CORRUPTED) )
+    if( (*pp_block)->i_flags & (BLOCK_FLAG_DISCONTINUITY | BLOCK_FLAG_CORRUPTED) )
     {
-        block_Release( *pp_block );
-        return NULL;
+        Flush( p_dec );
+        if( (*pp_block)->i_flags & BLOCK_FLAG_CORRUPTED )
+        {
+            block_Release( *pp_block );
+            *pp_block = NULL;
+            return NULL;
+        }
     }
 
     if( !p_sys->b_stream_info )
@@ -655,7 +672,7 @@ static int OpenEncoder( vlc_object_t *p_this )
     encoder_sys_t *p_sys;
 
     if( p_enc->fmt_out.i_codec != VLC_CODEC_FLAC &&
-        !p_enc->b_force )
+        !p_enc->obj.force )
     {
         return VLC_EGENERIC;
     }
@@ -727,7 +744,6 @@ static block_t *Encode( encoder_t *p_enc, block_t *p_aout_buf )
 {
     encoder_sys_t *p_sys = p_enc->p_sys;
     block_t *p_chain;
-    unsigned int i;
 
     /* FIXME: p_aout_buf is NULL when it's time to flush*/
     if( unlikely( !p_aout_buf ) ) return NULL;
@@ -746,7 +762,7 @@ static block_t *Encode( encoder_t *p_enc, block_t *p_aout_buf )
         p_sys->i_buffer = p_aout_buf->i_buffer * 2;
     }
 
-    for( i = 0 ; i < p_aout_buf->i_buffer / 2 ; i++ )
+    for( unsigned i = 0 ; i < p_aout_buf->i_buffer / 2 ; i++ )
     {
         p_sys->p_buffer[i]= ((int16_t *)p_aout_buf->p_buffer)[i];
     }

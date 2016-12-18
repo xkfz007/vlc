@@ -1,6 +1,6 @@
 # sparkle
 
-SPARKLE_VERSION := 1.6.1
+SPARKLE_VERSION := 1.13.1
 SPARKLE_URL := https://github.com/sparkle-project/Sparkle/archive/$(SPARKLE_VERSION).zip
 
 ifdef HAVE_MACOSX
@@ -8,14 +8,12 @@ PKGS += sparkle
 endif
 
 $(TARBALLS)/Sparkle-$(SPARKLE_VERSION).zip:
-	$(call download,$(SPARKLE_URL))
+	$(call download_pkg,$(SPARKLE_URL),sparkle)
 
 .sum-sparkle: Sparkle-$(SPARKLE_VERSION).zip
 
 sparkle: Sparkle-$(SPARKLE_VERSION).zip .sum-sparkle
 	$(UNPACK)
-	$(APPLY) $(SRC)/sparkle/sparkle-fix-compilation-on-snowleopard.patch
-	$(APPLY) $(SRC)/sparkle/sparkle-fix-runtime-exception-on-snowleopard.patch
 	$(MOVE)
 
 .sparkle: sparkle

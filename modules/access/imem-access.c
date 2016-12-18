@@ -22,6 +22,7 @@
 # include "config.h"
 #endif
 #include <assert.h>
+#include <stdint.h>
 
 #include <vlc_common.h>
 #include <vlc_access.h>
@@ -36,7 +37,7 @@ struct access_sys_t
     uint64_t size;
 };
 
-static ssize_t Read(access_t *access, uint8_t *buf, size_t len)
+static ssize_t Read(access_t *access, void *buf, size_t len)
 {
     access_sys_t *sys = access->p_sys;
 
@@ -46,12 +47,6 @@ static ssize_t Read(access_t *access, uint8_t *buf, size_t len)
         msg_Err(access, "read error");
         val = 0;
     }
-
-    if (val > 0) {
-        assert((size_t)val <= len);
-        access->info.i_pos += val;
-    } else
-        access->info.b_eof = true;
 
     return val;
 }
@@ -64,8 +59,6 @@ static int Seek(access_t *access, uint64_t offset)
 
     if (sys->seek_cb(sys->opaque, offset) != 0)
         return VLC_EGENERIC;
-
-   access->info.b_eof = false;
    return VLC_SUCCESS;
 }
 
@@ -75,28 +68,30 @@ static int Control(access_t *access, int query, va_list args)
 
     switch (query)
     {
-        case ACCESS_CAN_SEEK:
+        case STREAM_CAN_SEEK:
             *va_arg(args, bool *) = sys->seek_cb != NULL;
             break;
 
-        case ACCESS_CAN_FASTSEEK:
+        case STREAM_CAN_FASTSEEK:
             *va_arg(args, bool *) = false;
             break;
 
-        case ACCESS_CAN_PAUSE:
-        case ACCESS_CAN_CONTROL_PACE:
+        case STREAM_CAN_PAUSE:
+        case STREAM_CAN_CONTROL_PACE:
             *va_arg(args, bool *) = sys->seek_cb != NULL;
             break;
 
-        case ACCESS_GET_SIZE:
+        case STREAM_GET_SIZE:
+            if (sys->size == UINT64_MAX)
+                return VLC_EGENERIC;
             *va_arg(args, uint64_t *) = sys->size;
             break;
 
-        case ACCESS_GET_PTS_DELAY:
+        case STREAM_GET_PTS_DELAY:
             *va_arg(args, int64_t *) = DEFAULT_PTS_DELAY;
             break;
 
-        case ACCESS_SET_PAUSE_STATE:
+        case STREAM_SET_PAUSE_STATE:
             break;
 
         default:
@@ -106,7 +101,7 @@ static int Control(access_t *access, int query, va_list args)
     return VLC_SUCCESS;
 }
 
-static int open_cb_default(void *opaque, void **datap, size_t *sizep)
+static int open_cb_default(void *opaque, void **datap, uint64_t *sizep)
 {
     *datap = opaque;
     (void) sizep;
@@ -130,7 +125,7 @@ static int Open(vlc_object_t *object)
     sys->read_cb = var_InheritAddress(access, "imem-read");
     sys->seek_cb = var_InheritAddress(access, "imem-seek");
     sys->close_cb = var_InheritAddress(access, "imem-close");
-    sys->size = 0;
+    sys->size = UINT64_MAX;
 
     if (open_cb == NULL)
         open_cb = open_cb_default;
@@ -148,7 +143,6 @@ static int Open(vlc_object_t *object)
     access->pf_control = Control;
 
     access->p_sys = sys;
-    access_InitFields(access);
     return VLC_SUCCESS;
 error:
     free(sys);

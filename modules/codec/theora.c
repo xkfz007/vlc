@@ -85,6 +85,7 @@ static void CloseDecoder  ( vlc_object_t * );
 static void *DecodeBlock  ( decoder_t *, block_t ** );
 static int  ProcessHeaders( decoder_t * );
 static void *ProcessPacket ( decoder_t *, ogg_packet *, block_t ** );
+static void Flush( decoder_t * );
 
 static picture_t *DecodePacket( decoder_t *, ogg_packet * );
 
@@ -172,6 +173,7 @@ static int OpenDecoder( vlc_object_t *p_this )
         DecodeBlock;
     p_dec->pf_packetize    = (block_t *(*)(decoder_t *, block_t **))
         DecodeBlock;
+    p_dec->pf_flush        = Flush;
 
     /* Init supporting Theora structures needed in header parsing */
     th_comment_init( &p_sys->tc );
@@ -397,9 +399,16 @@ static int ProcessHeaders( decoder_t *p_dec )
     }
     else
     {
+        void* p_extra = realloc( p_dec->fmt_out.p_extra,
+                                 p_dec->fmt_in.i_extra );
+        if( unlikely( p_extra == NULL ) )
+        {
+            /* Clean up the decoder setup info... we're done with it */
+            th_setup_free( ts );
+            return VLC_ENOMEM;
+        }
+        p_dec->fmt_out.p_extra = p_extra;
         p_dec->fmt_out.i_extra = p_dec->fmt_in.i_extra;
-        p_dec->fmt_out.p_extra = xrealloc( p_dec->fmt_out.p_extra,
-                                                  p_dec->fmt_out.i_extra );
         memcpy( p_dec->fmt_out.p_extra,
                 p_dec->fmt_in.p_extra, p_dec->fmt_out.i_extra );
     }
@@ -415,6 +424,16 @@ error:
 }
 
 /*****************************************************************************
+ * Flush:
+ *****************************************************************************/
+static void Flush( decoder_t *p_dec )
+{
+    decoder_sys_t *p_sys = p_dec->p_sys;
+
+    p_sys->i_pts = VLC_TS_INVALID;
+}
+
+/*****************************************************************************
  * ProcessPacket: processes a theora packet.
  *****************************************************************************/
 static void *ProcessPacket( decoder_t *p_dec, ogg_packet *p_oggpacket,
@@ -424,9 +443,17 @@ static void *ProcessPacket( decoder_t *p_dec, ogg_packet *p_oggpacket,
     block_t *p_block = *pp_block;
     void *p_buf;
 
-    if( ( p_block->i_flags&(BLOCK_FLAG_DISCONTINUITY|BLOCK_FLAG_CORRUPTED) ) != 0 )
+    *pp_block = NULL; /* To avoid being fed the same packet again */
+
+    if( !p_block )
+        return NULL;
+
+    if( ( p_block->i_flags & BLOCK_FLAG_DISCONTINUITY ) != 0 )
+        p_sys->i_pts = p_block->i_pts;
+
+    if( ( p_block->i_flags & BLOCK_FLAG_CORRUPTED ) != 0 )
     {
-        /* Don't send the the first packet after a discontinuity to
+        /* Don't send the a corrupted packet to
          * theora_decode, otherwise we get purple/green display artifacts
          * appearing in the video output */
         block_Release(p_block);
@@ -438,8 +465,6 @@ static void *ProcessPacket( decoder_t *p_dec, ogg_packet *p_oggpacket,
     {
         p_sys->i_pts = p_block->i_pts;
     }
-
-    *pp_block = NULL; /* To avoid being fed the same packet again */
 
     if( p_sys->b_packetizer )
     {
@@ -496,12 +521,15 @@ static picture_t *DecodePacket( decoder_t *p_dec, ogg_packet *p_oggpacket )
         return NULL;
 
     /* Get a new picture */
+    if( decoder_UpdateVideoFormat( p_dec ) )
+        return NULL;
     p_pic = decoder_NewPicture( p_dec );
     if( !p_pic ) return NULL;
 
     theora_CopyPicture( p_pic, ycbcr );
 
     p_pic->date = p_sys->i_pts;
+    p_pic->b_progressive = true;
 
     return p_pic;
 }
@@ -651,7 +679,7 @@ static int OpenEncoder( vlc_object_t *p_this )
     int status;
 
     if( p_enc->fmt_out.i_codec != VLC_CODEC_THEORA &&
-        !p_enc->b_force )
+        !p_enc->obj.force )
     {
         return VLC_EGENERIC;
     }

@@ -63,7 +63,7 @@ static void Stop(audio_output_t *);
 static int VolumeSet(audio_output_t *, float );
 vlc_module_begin ()
 set_shortname("AudioQueue")
-set_description(N_("AudioQueue (iOS / Mac OS) audio output"))
+set_description("AudioQueue (iOS / Mac OS) audio output")
 set_capability("audio output", 40)
 set_category(CAT_AUDIO)
 set_subcategory(SUBCAT_AUDIO_AOUT)
@@ -121,6 +121,9 @@ static int Start(audio_output_t *p_aout, audio_sample_format_t *restrict fmt)
     aout_sys_t *p_sys = p_aout->sys;
     OSStatus error = 0;
 
+    if (aout_FormatNbChannels(fmt) == 0)
+        return VLC_EGENERIC;
+
     // prepare the format description for our output
     AudioStreamBasicDescription streamDescription;
     streamDescription.mSampleRate = fmt->i_rate;
@@ -165,10 +168,10 @@ static int Start(audio_output_t *p_aout, audio_sample_format_t *restrict fmt)
                             NULL,
                             NULL);
 
-	// Set audio session to mediaplayback
-	UInt32 sessionCategory = kAudioSessionCategory_MediaPlayback;
-	AudioSessionSetProperty(kAudioSessionProperty_AudioCategory, sizeof(sessionCategory),&sessionCategory);
-	AudioSessionSetActive(true);
+    // Set audio session to mediaplayback
+    UInt32 sessionCategory = kAudioSessionCategory_MediaPlayback;
+    AudioSessionSetProperty(kAudioSessionProperty_AudioCategory, sizeof(sessionCategory),&sessionCategory);
+    AudioSessionSetActive(true);
 #endif
 
     p_aout->sys->b_started = true;

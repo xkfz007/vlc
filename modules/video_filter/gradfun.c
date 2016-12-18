@@ -35,6 +35,7 @@
 #include <vlc_plugin.h>
 #include <vlc_cpu.h>
 #include <vlc_filter.h>
+#include <vlc_picture.h>
 
 /*****************************************************************************
  * Module descriptor
@@ -58,7 +59,7 @@ vlc_module_begin()
     set_description(N_("Gradfun video filter"))
     set_shortname(N_("Gradfun"))
     set_help(N_("Debanding algorithm"))
-    set_capability("video filter2", 0)
+    set_capability("video filter", 0)
     set_category(CAT_VIDEO)
     set_subcategory(SUBCAT_VIDEO_VFILTER)
     add_integer_with_range(CFG_PREFIX "radius", 16, RADIUS_MIN, RADIUS_MAX,

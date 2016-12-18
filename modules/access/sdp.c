@@ -40,12 +40,13 @@ vlc_module_begin ()
     add_shortcut ("sdp")
 vlc_module_end()
 
-static ssize_t Read (access_t *, uint8_t *, size_t);
+static ssize_t Read (access_t *, void *, size_t);
 static int Seek (access_t *, uint64_t);
 static int Control (access_t *, int, va_list);
 
 struct access_sys_t
 {
+    size_t offset;
     size_t length;
     char   data[];
 };
@@ -60,10 +61,10 @@ static int Open (vlc_object_t *obj)
         return VLC_ENOMEM;
 
     /* NOTE: This copy is not really needed. Better safe than sorry. */
+    sys->offset = 0;
     sys->length = len;
     memcpy (sys->data, access->psz_location, len);
 
-    access_InitFields (access);
     access->pf_read = Read;
     access->pf_block = NULL;
     access->pf_seek = Seek;
@@ -81,54 +82,59 @@ static void Close (vlc_object_t *obj)
     free (sys);
 }
 
-static ssize_t Read (access_t *access, uint8_t *buf, size_t len)
+static ssize_t Read (access_t *access, void *buf, size_t len)
 {
     access_sys_t *sys = access->p_sys;
 
-    if (access->info.i_pos >= sys->length)
-    {
-        access->info.b_eof = true;
+    if (sys->offset >= sys->length)
         return 0;
-    }
 
-    if (len > sys->length)
-        len = sys->length;
-    memcpy (buf, sys->data + access->info.i_pos, len);
-    access->info.i_pos += len;
+    if (len > sys->length - sys->offset)
+        len = sys->length - sys->offset;
+    memcpy (buf, sys->data + sys->offset, len);
     return len;
 }
 
 static int Seek (access_t *access, uint64_t position)
 {
-    access->info.i_pos = position;
-    access->info.b_eof = false;
+    access_sys_t *sys = access->p_sys;
+
+    if (position > sys->length)
+        position = sys->length;
+
+    sys->offset = position;
     return VLC_SUCCESS;
 }
 
 static int Control (access_t *access, int query, va_list args)
 {
+    access_sys_t *sys = access->p_sys;
+
     switch (query)
     {
-        case ACCESS_CAN_SEEK:
-        case ACCESS_CAN_FASTSEEK:
-        case ACCESS_CAN_PAUSE:
-        case ACCESS_CAN_CONTROL_PACE:
+        case STREAM_CAN_SEEK:
+        case STREAM_CAN_FASTSEEK:
+        case STREAM_CAN_PAUSE:
+        case STREAM_CAN_CONTROL_PACE:
         {
             bool *b = va_arg(args, bool*);
             *b = true;
             return VLC_SUCCESS;
         }
 
-        case ACCESS_GET_PTS_DELAY:
+        case STREAM_GET_SIZE:
+            *va_arg(args, uint64_t *) = sys->length;
+            return VLC_SUCCESS;
+
+        case STREAM_GET_PTS_DELAY:
         {
             int64_t *dp = va_arg(args, int64_t *);
             *dp = DEFAULT_PTS_DELAY;
             return VLC_SUCCESS;
         }
     
-        case ACCESS_SET_PAUSE_STATE:
+        case STREAM_SET_PAUSE_STATE:
             return VLC_SUCCESS;
     }
-    (void) access;
     return VLC_EGENERIC;
 }

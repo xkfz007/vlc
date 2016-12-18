@@ -699,7 +699,7 @@ static void SDPHandleUrl( sout_stream_t *p_stream, const char *psz_url )
     sout_stream_sys_t *p_sys = p_stream->p_sys;
     vlc_url_t url;
 
-    vlc_UrlParse( &url, psz_url, 0 );
+    vlc_UrlParse( &url, psz_url );
     if( url.psz_protocol && !strcasecmp( url.psz_protocol, "http" ) )
     {
         if( p_sys->p_httpd_file )
@@ -758,7 +758,7 @@ static void SDPHandleUrl( sout_stream_t *p_stream, const char *psz_url )
             msg_Err( p_stream, "you can use sdp=file:// only once" );
             goto out;
         }
-        p_sys->psz_sdp_file = make_path( psz_url );
+        p_sys->psz_sdp_file = vlc_uri2path( psz_url );
         if( p_sys->psz_sdp_file == NULL )
             goto out;
         FileSetup( p_stream );
@@ -1444,7 +1444,7 @@ static void* ThreadSend( void *data )
 
         vlc_mutex_lock( &id->lock_sink );
         unsigned deadc = 0; /* How many dead sockets? */
-        int deadv[id->sinkc]; /* Dead sockets list */
+        int deadv[id->sinkc ? id->sinkc : 1]; /* Dead sockets list */
 
         for( int i = 0; i < id->sinkc; i++ )
         {
@@ -1747,6 +1747,7 @@ static ssize_t AccessOutGrabberWriteBuffer( sout_stream_t *p_stream,
             /* allocate a new packet */
             p_sys->packet = block_Alloc( id->i_mtu );
             rtp_packetize_common( id, p_sys->packet, 1, i_dts );
+            p_sys->packet->i_buffer = 12;
             p_sys->packet->i_dts = i_dts;
             p_sys->packet->i_length = p_buffer->i_length / i_packet;
             i_dts += p_sys->packet->i_length;

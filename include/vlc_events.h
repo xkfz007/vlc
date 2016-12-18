@@ -110,10 +110,6 @@ typedef struct vlc_event_manager_t
 
 /* List of event */
 typedef enum vlc_event_type_t {
-    /* Input (thread) events */
-    vlc_InputStateChanged,
-    vlc_InputSelectedStreamChanged,
-
     /* Input item events */
     vlc_InputItemMetaChanged,
     vlc_InputItemSubItemAdded,
@@ -125,12 +121,9 @@ typedef enum vlc_event_type_t {
     vlc_InputItemErrorWhenReadingChanged,
     vlc_InputItemPreparseEnded,
 
-    /* Service Discovery event */
-    vlc_ServicesDiscoveryItemAdded,
-    vlc_ServicesDiscoveryItemRemoved,
-    vlc_ServicesDiscoveryItemRemoveAll,
-    vlc_ServicesDiscoveryStarted,
-    vlc_ServicesDiscoveryEnded,
+    /* Renderer Discovery events */
+    vlc_RendererDiscoveryItemAdded=vlc_InputItemPreparseEnded+6,
+    vlc_RendererDiscoveryItemRemoved,
 
     /* Addons Manager events */
     vlc_AddonFound,
@@ -145,16 +138,6 @@ typedef struct vlc_event_t
     void * p_obj; /* Sender object, automatically filled by vlc_event_send() */
     union vlc_event_type_specific
     {
-        /* Input (thread) events */
-        struct vlc_input_state_changed
-        {
-            int new_state;
-        } input_state_changed;
-        struct vlc_input_selected_stream_changed
-        {
-            void * unused;
-        } input_selected_stream_changed;
-
         /* Input item events */
         struct vlc_input_item_meta_changed
         {
@@ -188,25 +171,20 @@ typedef struct vlc_event_t
         {
             bool new_value;
         } input_item_error_when_reading_changed;
+        struct input_item_preparse_ended
+        {
+            int new_status;
+        } input_item_preparse_ended;
 
-        /* Service discovery events */
-        struct vlc_services_discovery_item_added
+        /* Renderer discovery events */
+        struct vlc_renderer_discovery_item_added
         {
-            input_item_t * p_new_item;
-            const char * psz_category;
-        } services_discovery_item_added;
-        struct vlc_services_discovery_item_removed
+            vlc_renderer_item_t * p_new_item;
+        } renderer_discovery_item_added;
+        struct vlc_renderer_discovery_item_removed
         {
-            input_item_t * p_item;
-        } services_discovery_item_removed;
-        struct vlc_services_discovery_started
-        {
-            void * unused;
-        } services_discovery_started;
-        struct vlc_services_discovery_ended
-        {
-            void * unused;
-        } services_discovery_ended;
+            vlc_renderer_item_t * p_item;
+        } renderer_discovery_item_removed;
 
         /* Addons */
         struct vlc_addon_generic_event

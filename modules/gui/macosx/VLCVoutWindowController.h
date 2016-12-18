@@ -25,26 +25,17 @@
 #import <Cocoa/Cocoa.h>
 
 #import <vlc_vout_window.h>
+#import "VLCKeyboardBacklightControl.h"
 
+@class VLCControlsBarCommon;
 @class VLCVideoWindowCommon;
 @class VLCVoutView;
 
 @interface VLCVoutWindowController : NSObject
-{
-    NSMutableDictionary *o_vout_dict;
 
-    NSPoint top_left_point;
-
-    // save the status level if at least one video window is on status level
-    NSUInteger i_statusLevelWindowCounter;
-    NSInteger i_currentWindowLevel;
-    NSInteger i_currentFloatingWindowLevel;
-
-    BOOL b_mainwindow_has_video;
-}
+@property (readonly, atomic) NSLock *lock;
 
 @property (readonly, nonatomic) NSInteger currentStatusWindowLevel;
-
 
 - (VLCVoutView *)setupVoutForWindow:(vout_window_t *)p_wnd withProposedVideoViewPosition:(NSRect)videoViewPosition;
 - (void)removeVoutforDisplay:(NSValue *)o_key;
@@ -52,7 +43,7 @@
 - (void)setWindowLevel:(NSInteger)i_level forWindow:(vout_window_t *)p_wnd;
 - (void)setFullscreen:(int)i_full forWindow:(vout_window_t *)p_wnd withAnimation:(BOOL)b_animation;
 
-- (void)updateWindowsControlsBarWithSelector:(SEL)aSel;
+- (void)updateControlsBarsUsingBlock:(void (^)(VLCControlsBarCommon *controlsBar))block;
 - (void)updateWindowsUsingBlock:(void (^)(VLCVideoWindowCommon *o_window))windowUpdater;
 
 - (void)updateWindowLevelForHelperWindows:(NSInteger)i_level;

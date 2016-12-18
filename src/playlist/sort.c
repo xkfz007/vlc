@@ -62,7 +62,7 @@ static inline int meta_strcasecmp_title( const playlist_item_t *first,
 }
 
 /**
- * Compare two intems accoring to the given meta type
+ * Compare two intems according to the given meta type
  * @param first: the first item
  * @param second: the second item
  * @param meta: the meta type to use to sort the items
@@ -193,6 +193,8 @@ static int recursiveNodeSort( playlist_t *p_playlist, playlist_item_t *p_node,
 int playlist_RecursiveNodeSort( playlist_t *p_playlist, playlist_item_t *p_node,
                                 int i_mode, int i_type )
 {
+    PL_ASSERT_LOCKED;
+
     /* Ask the playlist to reset as we are changing the order */
     pl_priv(p_playlist)->b_reset_currently_playing = true;
 
@@ -304,6 +306,11 @@ SORTFN( SORT_TITLE_NUMERIC, first, second )
 SORTFN( SORT_TRACK_NUMBER, first, second )
 {
     return meta_sort( first, second, vlc_meta_TrackNumber, true );
+}
+
+SORTFN( SORT_DISC_NUMBER, first, second )
+{
+  return meta_sort( first, second, vlc_meta_DiscNumber, true );
 }
 
 SORTFN( SORT_URI, first, second )

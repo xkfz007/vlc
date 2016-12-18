@@ -24,8 +24,11 @@
 #define VLC_AOUT_H 1
 
 /**
+ * \defgroup audio_output Audio output
+ * \ingroup output
+ * @{
  * \file
- * This file defines functions, structures and macros for audio output object
+ * Audio output modules interface
  */
 
 /* Buffers which arrive in advance of more than AOUT_MAX_ADVANCE_TIME
@@ -73,8 +76,14 @@
 #define AOUT_FMT_SPDIF( p_format ) \
     ( ((p_format)->i_format == VLC_CODEC_SPDIFL)       \
        || ((p_format)->i_format == VLC_CODEC_SPDIFB)   \
-       || ((p_format)->i_format == VLC_CODEC_A52)       \
+       || ((p_format)->i_format == VLC_CODEC_A52)      \
        || ((p_format)->i_format == VLC_CODEC_DTS) )
+
+#define AOUT_FMT_HDMI( p_format )                   \
+    ( (p_format)->i_format == VLC_CODEC_EAC3        \
+    ||(p_format)->i_format == VLC_CODEC_TRUEHD      \
+    ||(p_format)->i_format == VLC_CODEC_MLP         \
+    )
 
 /* Values used for the audio-channels object variable */
 #define AOUT_VAR_CHAN_UNSET         0 /* must be zero */
@@ -179,7 +188,6 @@ static const uint32_t pi_vlc_chan_order_wg4[] =
 
 #define AOUT_RESTART_FILTERS 1
 #define AOUT_RESTART_OUTPUT  2
-#define AOUT_RESTART_DECODER 4
 
 /*****************************************************************************
  * Prototypes
@@ -267,7 +275,7 @@ static inline void aout_MuteReport(audio_output_t *aout, bool mute)
 
 /**
  * Report audio policy status.
- * \parm cork true to request a cork, false to undo any pending cork.
+ * \param cork true to request a cork, false to undo any pending cork.
  */
 static inline void aout_PolicyReport(audio_output_t *aout, bool cork)
 {
@@ -333,7 +341,11 @@ VLC_API void aout_FiltersDelete(vlc_object_t *, aout_filters_t *);
         aout_FiltersDelete(VLC_OBJECT(o),f)
 VLC_API bool aout_FiltersAdjustResampling(aout_filters_t *, int);
 VLC_API block_t *aout_FiltersPlay(aout_filters_t *, block_t *, int rate);
+VLC_API block_t *aout_FiltersDrain(aout_filters_t *);
+VLC_API void     aout_FiltersFlush(aout_filters_t *);
 
 VLC_API vout_thread_t * aout_filter_RequestVout( filter_t *, vout_thread_t *p_vout, video_format_t *p_fmt );
+
+/** @} */
 
 #endif /* VLC_AOUT_H */

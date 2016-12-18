@@ -46,6 +46,7 @@ struct decoder_sys_t {
 static subpicture_t *ConvertSubtitle(decoder_t *, AVSubtitle *, mtime_t pts,
                                      AVCodecContext *avctx);
 static subpicture_t *DecodeSubtitle(decoder_t *, block_t **);
+static void Flush(decoder_t *);
 
 /**
  * Initialize subtitle decoder
@@ -80,13 +81,18 @@ int InitSubtitleDec(decoder_t *dec, AVCodecContext *context,
     context->extradata_size = 0;
     context->extradata = NULL;
 
+#if LIBAVFORMAT_VERSION_MICRO >= 100
+    av_codec_set_pkt_timebase(context, AV_TIME_BASE_Q);
+#endif
+
     /* */
     int ret;
     char *psz_opts = var_InheritString(dec, "avcodec-options");
     AVDictionary *options = NULL;
-    if (psz_opts && *psz_opts)
+    if (psz_opts) {
         options = vlc_av_get_options(psz_opts);
-    free(psz_opts);
+        free(psz_opts);
+    }
 
     vlc_avcodec_lock();
     ret = avcodec_open2(context, codec, options ? &options : NULL);
@@ -108,8 +114,19 @@ int InitSubtitleDec(decoder_t *dec, AVCodecContext *context,
     msg_Dbg(dec, "libavcodec codec (%s) started", codec->name);
     dec->fmt_out.i_cat = SPU_ES;
     dec->pf_decode_sub = DecodeSubtitle;
+    dec->pf_flush      = Flush;
 
     return VLC_SUCCESS;
+}
+
+/**
+ * Flush
+ */
+static void Flush(decoder_t *dec)
+{
+    decoder_sys_t *sys = dec->p_sys;
+
+    avcodec_flush_buffers(sys->p_context);
 }
 
 /**
@@ -124,10 +141,12 @@ static subpicture_t *DecodeSubtitle(decoder_t *dec, block_t **block_ptr)
 
     block_t *block = *block_ptr;
 
-    if (block->i_flags & (BLOCK_FLAG_DISCONTINUITY|BLOCK_FLAG_CORRUPTED)) {
-        block_Release(block);
-        avcodec_flush_buffers(sys->p_context);
-        return NULL;
+    if (block->i_flags & (BLOCK_FLAG_DISCONTINUITY | BLOCK_FLAG_CORRUPTED)) {
+        if (block->i_flags & BLOCK_FLAG_CORRUPTED) {
+            Flush(dec);
+            block_Release(block);
+            return NULL;
+        }
     }
 
     if (block->i_buffer <= 0) {
@@ -152,6 +171,7 @@ static subpicture_t *DecodeSubtitle(decoder_t *dec, block_t **block_ptr)
     av_init_packet(&pkt);
     pkt.data = block->p_buffer;
     pkt.size = block->i_buffer;
+    pkt.pts  = block->i_pts;
 
     int has_subtitle = 0;
     int used = avcodec_decode_subtitle2(sys->p_context,
@@ -174,7 +194,7 @@ static subpicture_t *DecodeSubtitle(decoder_t *dec, block_t **block_ptr)
     subpicture_t *spu = NULL;
     if (has_subtitle)
         spu = ConvertSubtitle(dec, &subtitle,
-                              block->i_pts > 0 ? block->i_pts : block->i_dts,
+                              subtitle.pts,
                               sys->p_context);
 
     /* */
@@ -280,11 +300,8 @@ static subpicture_t *ConvertSubtitle(decoder_t *dec, AVSubtitle *ffsub, mtime_t 
             *region_next = region;
             region_next = &region->p_next;
         }
-        /* Free AVSubtitleRect */
-        avpicture_free(&rec->pict);
-        av_free(rec);
     }
-    av_free(ffsub->rects);
+    avsubtitle_free(ffsub);
 
     return spu;
 }

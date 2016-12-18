@@ -90,13 +90,13 @@ void vlc_vaLog (vlc_object_t *obj, int type, const char *module,
                 const char *file, unsigned line, const char *func,
                 const char *format, va_list args)
 {
-    if (obj != NULL && obj->i_flags & OBJECT_FLAGS_QUIET)
+    if (obj != NULL && obj->obj.flags & OBJECT_FLAGS_QUIET)
         return;
 
     /* Get basename from the module filename */
     char *p = strrchr(module, '/');
     if (p != NULL)
-        module = p;
+        module = p + 1;
     p = strchr(module, '.');
 
     size_t modlen = (p != NULL) ? (p - module) : 0;
@@ -112,17 +112,18 @@ void vlc_vaLog (vlc_object_t *obj, int type, const char *module,
     vlc_log_t msg;
 
     msg.i_object_id = (uintptr_t)obj;
-    msg.psz_object_type = (obj != NULL) ? obj->psz_object_type : "generic";
+    msg.psz_object_type = (obj != NULL) ? obj->obj.object_type : "generic";
     msg.psz_module = module;
     msg.psz_header = NULL;
     msg.file = file;
     msg.line = line;
     msg.func = func;
+    msg.tid = vlc_thread_id();
 
-    for (vlc_object_t *o = obj; o != NULL; o = o->p_parent)
-        if (o->psz_header != NULL)
+    for (vlc_object_t *o = obj; o != NULL; o = o->obj.parent)
+        if (o->obj.header != NULL)
         {
-            msg.psz_header = o->psz_header;
+            msg.psz_header = o->obj.header;
             break;
         }
 
@@ -136,7 +137,7 @@ void vlc_vaLog (vlc_object_t *obj, int type, const char *module,
 
     /* Pass message to the callback */
     if (obj != NULL)
-        vlc_vaLogCallback(obj->p_libvlc, type, &msg, format, args);
+        vlc_vaLogCallback(obj->obj.libvlc, type, &msg, format, args);
 }
 
 /**
@@ -178,7 +179,7 @@ static void Win32DebugOutputMsg (void* d, int type, const vlc_log_t *p_item,
     int msg_len = vsnprintf(NULL, 0, format, dol2);
     va_end (dol2);
 
-    if(msg_len <= 0)
+    if (msg_len <= 0)
         return;
 
     char *msg = malloc(msg_len + 1 + 1);
@@ -187,12 +188,12 @@ static void Win32DebugOutputMsg (void* d, int type, const vlc_log_t *p_item,
 
     msg_len = vsnprintf(msg, msg_len+1, format, dol);
     if (msg_len > 0){
-        if(msg[msg_len-1] != '\n'){
+        if (msg[msg_len-1] != '\n') {
             msg[msg_len] = '\n';
             msg[msg_len + 1] = '\0';
         }
         char* psz_msg = NULL;
-        if(asprintf(&psz_msg, "%s %s%s: %s", p_item->psz_module,
+        if (asprintf(&psz_msg, "%s %s%s: %s", p_item->psz_module,
                     p_item->psz_object_type, msg_type[type], msg) > 0) {
             wchar_t* wmsg = ToWide(psz_msg);
             OutputDebugStringW(wmsg);
@@ -268,7 +269,7 @@ static int vlc_LogEarlyOpen(vlc_logger_t *logger)
 
 static void vlc_LogEarlyClose(vlc_logger_t *logger, void *d)
 {
-    libvlc_int_t *vlc = logger->p_libvlc;
+    libvlc_int_t *vlc = logger->obj.libvlc;
     vlc_logger_early_t *sys = d;
 
     /* Drain early log messages */

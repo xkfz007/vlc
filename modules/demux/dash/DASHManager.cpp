@@ -22,34 +22,37 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
 
-/* config.h may include inttypes.h, so make sure we define that option
- * early enough. */
-#define __STDC_FORMAT_MACROS 1
-#define __STDC_CONSTANT_MACROS 1
-#define __STDC_LIMIT_MACROS 1
-
 #ifdef HAVE_CONFIG_H
 # include "config.h"
 #endif
 
-#include <inttypes.h>
+#include <vlc_fixups.h>
+#include <cinttypes>
 
 #include "DASHManager.h"
-#include "mpd/MPDFactory.h"
+#include "mpd/ProgramInformation.h"
+#include "mpd/IsoffMainParser.h"
 #include "xml/DOMParser.h"
-#include "../adaptative/logic/RateBasedAdaptationLogic.h"
+#include "xml/Node.h"
+#include "../adaptive/tools/Helper.h"
+#include "../adaptive/http/HTTPConnectionManager.h"
 #include <vlc_stream.h>
+#include <vlc_demux.h>
+#include <vlc_meta.h>
+#include <vlc_block.h>
+#include "../adaptive/tools/Retrieve.hpp"
 
 #include <algorithm>
 #include <ctime>
 
 using namespace dash;
 using namespace dash::mpd;
-using namespace adaptative::logic;
+using namespace adaptive::logic;
 
-DASHManager::DASHManager(MPD *mpd,
-                         AbstractAdaptationLogic::LogicType type, stream_t *stream) :
-             PlaylistManager(mpd, type, stream)
+DASHManager::DASHManager(demux_t *demux_, MPD *mpd,
+                         AbstractStreamFactory *factory,
+                         AbstractAdaptationLogic::LogicType type) :
+             PlaylistManager(demux_, mpd, factory, type)
 {
 }
 
@@ -57,90 +60,154 @@ DASHManager::~DASHManager   ()
 {
 }
 
+void DASHManager::scheduleNextUpdate()
+{
+    time_t now = time(NULL);
+
+    mtime_t minbuffer = 0;
+    std::vector<AbstractStream *>::const_iterator it;
+    for(it=streams.begin(); it!=streams.end(); ++it)
+    {
+        const AbstractStream *st = *it;
+        const mtime_t m = st->getMinAheadTime();
+        if(m > 0 && (m < minbuffer || minbuffer == 0))
+            minbuffer = m;
+    }
+    minbuffer /= 2;
+
+    if(playlist->minUpdatePeriod.Get() > minbuffer)
+        minbuffer = playlist->minUpdatePeriod.Get();
+
+    if(minbuffer < 5 * CLOCK_FREQ)
+        minbuffer = 5 * CLOCK_FREQ;
+
+    nextPlaylistupdate = now + minbuffer / CLOCK_FREQ;
+
+    msg_Dbg(p_demux, "Updated MPD, next update in %" PRId64 "s", (mtime_t) nextPlaylistupdate - now );
+}
+
+bool DASHManager::needsUpdate() const
+{
+    if(nextPlaylistupdate && time(NULL) < nextPlaylistupdate)
+        return false;
+
+    return PlaylistManager::needsUpdate();
+}
+
 bool DASHManager::updatePlaylist()
 {
-    if(!playlist->isLive() || !playlist->minUpdatePeriod.Get())
-        return true;
-
-    mtime_t now = time(NULL);
-    if(nextPlaylistupdate && now < nextPlaylistupdate)
-        return true;
-
     /* do update */
     if(nextPlaylistupdate)
     {
-        std::string url(stream->psz_access);
+        std::string url(p_demux->psz_access);
         url.append("://");
-        url.append(stream->psz_path);
+        url.append(p_demux->psz_location);
 
-        stream_t *mpdstream = stream_UrlNew(stream, url.c_str());
-        if(!mpdstream)
+        block_t *p_block = Retrieve::HTTP(VLC_OBJECT(p_demux), url);
+        if(!p_block)
             return false;
 
-        xml::DOMParser parser(mpdstream);
-        if(!parser.parse())
+        stream_t *mpdstream = vlc_stream_MemoryNew(p_demux, p_block->p_buffer, p_block->i_buffer, true);
+        if(!mpdstream)
         {
-            stream_Delete(mpdstream);
+            block_Release(p_block);
+            return false;
+        }
+
+        xml::DOMParser parser(mpdstream);
+        if(!parser.parse(true))
+        {
+            vlc_stream_Delete(mpdstream);
+            block_Release(p_block);
             return false;
         }
 
         mtime_t minsegmentTime = 0;
-        for(int type=0; type<StreamTypeCount; type++)
+        std::vector<AbstractStream *>::iterator it;
+        for(it=streams.begin(); it!=streams.end(); it++)
         {
-            if(!streams[type])
-                continue;
-            mtime_t segmentTime = streams[type]->getPosition();
+            mtime_t segmentTime = (*it)->getPlaybackTime();
             if(!minsegmentTime || segmentTime < minsegmentTime)
                 minsegmentTime = segmentTime;
         }
 
-        MPD *newmpd = MPDFactory::create(parser.getRootNode(), mpdstream, parser.getProfile());
+        IsoffMainParser mpdparser(parser.getRootNode(), VLC_OBJECT(p_demux),
+                                  mpdstream, Helper::getDirectoryPath(url).append("/"));
+        MPD *newmpd = mpdparser.parse();
         if(newmpd)
         {
             playlist->mergeWith(newmpd, minsegmentTime);
             delete newmpd;
         }
-        stream_Delete(mpdstream);
+        vlc_stream_Delete(mpdstream);
+        block_Release(p_block);
     }
-
-    /* Compute new MPD update time */
-    mtime_t mininterval = 0;
-    mtime_t maxinterval = 0;
-    playlist->getTimeLinesBoundaries(&mininterval, &maxinterval);
-    if(maxinterval > mininterval)
-        maxinterval = (maxinterval - mininterval) / CLOCK_FREQ;
-    else
-        maxinterval = 60;
-    maxinterval = std::max(maxinterval, (mtime_t)60);
-
-    mininterval = std::max(playlist->minUpdatePeriod.Get(),
-                           playlist->maxSegmentDuration.Get());
-
-    nextPlaylistupdate = now + (maxinterval - mininterval) / 2;
-
-    msg_Dbg(stream, "Updated MPD, next update in %" PRId64 "s (%" PRId64 "..%" PRId64 ")",
-            nextPlaylistupdate - now, mininterval, maxinterval );
 
     return true;
 }
 
-AbstractAdaptationLogic *DASHManager::createLogic(AbstractAdaptationLogic::LogicType type)
+int DASHManager::doControl(int i_query, va_list args)
 {
-    switch(type)
+    switch (i_query)
     {
-        case AbstractAdaptationLogic::FixedRate:
+        case DEMUX_GET_META:
         {
-            size_t bps = var_InheritInteger(stream, "dash-prefbw") * 8192;
-            return new (std::nothrow) FixedRateAdaptationLogic(bps);
+            MPD *mpd = dynamic_cast<MPD *>(playlist);
+            if(!mpd)
+                return VLC_EGENERIC;
+
+            if(!mpd->programInfo.Get())
+                break;
+
+            vlc_meta_t *p_meta = (vlc_meta_t *) va_arg (args, vlc_meta_t*);
+            vlc_meta_t *meta = vlc_meta_New();
+            if (meta == NULL)
+                return VLC_EGENERIC;
+
+            if(!mpd->programInfo.Get()->getTitle().empty())
+                vlc_meta_SetTitle(meta, mpd->programInfo.Get()->getTitle().c_str());
+
+            if(!mpd->programInfo.Get()->getSource().empty())
+                vlc_meta_SetPublisher(meta, mpd->programInfo.Get()->getSource().c_str());
+
+            if(!mpd->programInfo.Get()->getCopyright().empty())
+                vlc_meta_SetCopyright(meta, mpd->programInfo.Get()->getCopyright().c_str());
+
+            if(!mpd->programInfo.Get()->getMoreInformationUrl().empty())
+                vlc_meta_SetURL(meta, mpd->programInfo.Get()->getMoreInformationUrl().c_str());
+
+            vlc_meta_Merge(p_meta, meta);
+            vlc_meta_Delete(meta);
+            break;
         }
-        case AbstractAdaptationLogic::Default:
-        case AbstractAdaptationLogic::RateBased:
-        {
-            int width = var_InheritInteger(stream, "dash-prefwidth");
-            int height = var_InheritInteger(stream, "dash-prefheight");
-            return new (std::nothrow) RateBasedAdaptationLogic(width, height);
-        }
-        default:
-            return PlaylistManager::createLogic(type);
     }
+    return PlaylistManager::doControl(i_query, args);
+}
+
+bool DASHManager::isDASH(xml::Node *root)
+{
+    const std::string namespaces[] = {
+        "urn:mpeg:mpegB:schema:DASH:MPD:DIS2011",
+        "urn:mpeg:schema:dash:mpd:2011",
+        "urn:mpeg:DASH:schema:MPD:2011",
+        "urn:mpeg:mpegB:schema:DASH:MPD:DIS2011",
+        "urn:mpeg:schema:dash:mpd:2011",
+        "urn:mpeg:DASH:schema:MPD:2011",
+    };
+
+    if(root->getName() != "MPD")
+        return false;
+
+    std::string ns = root->getAttributeValue("xmlns");
+    for( size_t i=0; i<ARRAY_SIZE(namespaces); i++ )
+    {
+        if ( adaptive::Helper::ifind(ns, namespaces[i]) )
+            return true;
+    }
+    return false;
+}
+
+bool DASHManager::mimeMatched(const std::string &mime)
+{
+    return (mime == "application/dash+xml");
 }

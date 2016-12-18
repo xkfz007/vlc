@@ -170,13 +170,16 @@ static int ItemChange( vlc_object_t *p_this, const char *psz_var,
     if( !p_input )
         return VLC_SUCCESS;
 
-    if( p_input->b_dead )
-        /* Not playing anything ... */
-        return VLC_SUCCESS;
-
     /* Playing something ... */
     input_item_t *p_input_item = input_GetItem( p_input );
     psz_title = input_item_GetTitleFbName( p_input_item );
+
+    /* Checking for click on directories */
+    if(p_input_item->i_type == ITEM_TYPE_DIRECTORY || p_input_item->i_type == ITEM_TYPE_PLAYLIST
+        || p_input_item->i_type == ITEM_TYPE_NODE || p_input_item->i_type== ITEM_TYPE_UNKNOWN
+        || p_input_item->i_type == ITEM_TYPE_CARD){
+        return VLC_SUCCESS;
+    }
 
     /* We need at least a title */
     if( EMPTY_STR( psz_title ) )
@@ -209,7 +212,7 @@ static int ItemChange( vlc_object_t *p_this, const char *psz_var,
 
     if( psz_arturl )
     {
-        char *psz = make_path( psz_arturl );
+        char *psz = vlc_uri2path( psz_arturl );
         free( psz_arturl );
         psz_arturl = psz;
     }

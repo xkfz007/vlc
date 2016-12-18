@@ -42,6 +42,7 @@
 
 #include <vlc_common.h>
 #include <vlc_keys.h>
+#include <vlc_charset.h>
 #include "configuration.h"
 #include "libvlc.h"
 
@@ -260,7 +261,7 @@ found:
 
 /*** VLC key map ***/
 
-#define MAXACTION 20
+#define MAXACTION 26
 struct action
 {
     char name[MAXACTION];
@@ -353,6 +354,9 @@ static const struct action actions[] =
     { "subsync-markaudio", ACTIONID_SUBSYNC_MARKAUDIO, },
     { "subsync-marksub", ACTIONID_SUBSYNC_MARKSUB, },
     { "subsync-reset", ACTIONID_SUBSYNC_RESET, },
+    { "subtitle-text-scale-down", ACTIONID_SUBTITLE_TEXT_SCALE_DOWN, },
+    { "subtitle-text-scale-normal", ACTIONID_SUBTITLE_TEXT_SCALE_NORMAL, },
+    { "subtitle-text-scale-up", ACTIONID_SUBTITLE_TEXT_SCALE_UP, },
     { "subtitle-toggle", ACTIONID_SUBTITLE_TOGGLE, },
     { "subtitle-track", ACTIONID_SUBTITLE_TRACK, },
     { "title-next", ACTIONID_TITLE_NEXT, },
@@ -364,6 +368,10 @@ static const struct action actions[] =
     { "uncrop-right", ACTIONID_UNCROP_RIGHT, },
     { "uncrop-top", ACTIONID_UNCROP_TOP, },
     { "unzoom", ACTIONID_UNZOOM, },
+    { "viewpoint-fov-in", ACTIONID_VIEWPOINT_FOV_IN, },
+    { "viewpoint-fov-out", ACTIONID_VIEWPOINT_FOV_OUT, },
+    { "viewpoint-roll-anticlock", ACTIONID_VIEWPOINT_ROLL_ANTICLOCK, },
+    { "viewpoint-roll-clock", ACTIONID_VIEWPOINT_ROLL_CLOCK, },
     { "vol-down", ACTIONID_VOL_DOWN, },
     { "vol-mute", ACTIONID_VOL_MUTE, },
     { "vol-up", ACTIONID_VOL_UP, },
@@ -442,8 +450,8 @@ static void vlc_AddWheelMapping (void **map, uint32_t kmore, uint32_t kless,
     switch (mode)
     {
         case 0: /* volume up/down */
-            amore = ACTIONID_VOL_UP;
-            aless = ACTIONID_VOL_DOWN;
+            amore = ACTIONID_COMBO_VOL_FOV_UP;
+            aless = ACTIONID_COMBO_VOL_FOV_DOWN;
             break;
         case 2: /* position latter/earlier */
             amore = ACTIONID_JUMP_FORWARD_EXTRASHORT;

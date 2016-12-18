@@ -29,9 +29,9 @@
 typedef struct block_bytestream_t
 {
     block_t *p_chain;  /**< byte stream head block */
+    block_t **pp_last; /**< tail ppointer for appends */
     block_t *p_block;  /**< byte stream read pointer block */
     size_t   i_offset; /**< byte stream read pointer offset within block */
-    /* TODO? add tail pointer for faster push? */
 } block_bytestream_t;
 
 /*****************************************************************************
@@ -40,18 +40,13 @@ typedef struct block_bytestream_t
 static inline void block_BytestreamInit( block_bytestream_t *p_bytestream )
 {
     p_bytestream->p_chain = p_bytestream->p_block = NULL;
+    p_bytestream->pp_last = &p_bytestream->p_chain;
     p_bytestream->i_offset = 0;
 }
 
 static inline void block_BytestreamRelease( block_bytestream_t *p_bytestream )
 {
-    for( block_t *block = p_bytestream->p_chain; block != NULL; )
-    {
-        block_t *p_next = block->p_next;
-
-        block_Release( block );
-        block = p_next;
-    }
+    block_ChainRelease( p_bytestream->p_chain );
 }
 
 /**
@@ -88,12 +83,14 @@ static inline void block_BytestreamFlush( block_bytestream_t *p_bytestream )
     }
 
     p_bytestream->p_chain = p_bytestream->p_block = block;
+    if( p_bytestream->p_chain == NULL )
+        p_bytestream->pp_last = &p_bytestream->p_chain;
 }
 
 static inline void block_BytestreamPush( block_bytestream_t *p_bytestream,
                                          block_t *p_block )
 {
-    block_ChainAppend( &p_bytestream->p_chain, p_block );
+    block_ChainLastAppend( &p_bytestream->pp_last, p_block );
     if( !p_bytestream->p_block ) p_bytestream->p_block = p_block;
 }
 
@@ -115,6 +112,7 @@ static inline block_t *block_BytestreamPop( block_bytestream_t *p_bytestream )
         p_block->i_buffer -= p_bytestream->i_offset;
         p_bytestream->i_offset = 0;
         p_bytestream->p_chain = p_bytestream->p_block = NULL;
+        p_bytestream->pp_last = &p_bytestream->p_chain;
         return p_block;
     }
 
@@ -124,6 +122,7 @@ static inline block_t *block_BytestreamPop( block_bytestream_t *p_bytestream )
     block_t *p_block_old = p_block;
     p_block = p_block->p_next;
     p_block_old->p_next = NULL;
+    p_bytestream->pp_last = &p_block_old->p_next;
 
     return p_block;
 }
@@ -438,9 +437,12 @@ static inline int block_PeekOffsetBytes( block_bytestream_t *p_bytestream,
     return VLC_SUCCESS;
 }
 
+typedef const uint8_t * (*block_startcode_helper_t)( const uint8_t *, const uint8_t * );
+
 static inline int block_FindStartcodeFromOffset(
     block_bytestream_t *p_bytestream, size_t *pi_offset,
-    const uint8_t *p_startcode, int i_startcode_length )
+    const uint8_t *p_startcode, int i_startcode_length,
+    block_startcode_helper_t p_startcode_helper )
 {
     block_t *p_block, *p_block_backup = 0;
     int i_size = 0;
@@ -472,6 +474,21 @@ static inline int block_FindStartcodeFromOffset(
     {
         for( i_offset = i_size; i_offset < p_block->i_buffer; i_offset++ )
         {
+            /* Use optimized helper when possible */
+            if( p_startcode_helper && !i_match &&
+               (p_block->i_buffer - i_offset) > ((size_t)i_startcode_length - 1) )
+            {
+                const uint8_t *p_res = p_startcode_helper( &p_block->p_buffer[i_offset],
+                                                           &p_block->p_buffer[p_block->i_buffer] );
+                if( p_res )
+                {
+                    *pi_offset += i_offset + (p_res - &p_block->p_buffer[i_offset]);
+                    return VLC_SUCCESS;
+                }
+                /* Then parsing boundary with legacy code */
+                i_offset = p_block->i_buffer - (i_startcode_length - 1);
+            }
+
             if( p_block->p_buffer[i_offset] == p_startcode[i_match] )
             {
                 if( !i_match )

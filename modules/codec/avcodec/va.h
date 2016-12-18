@@ -36,9 +36,12 @@ struct vlc_va_t {
     module_t *module;
     const char *description;
 
-    int  (*setup)(vlc_va_t *, AVCodecContext *, vlc_fourcc_t *output);
+#ifdef _WIN32
+    VLC_DEPRECATED
+    void (*setup)(vlc_va_t *, vlc_fourcc_t *output);
+#endif
     int  (*get)(vlc_va_t *, picture_t *pic, uint8_t **data);
-    void (*release)(void *pic, uint8_t *surface);
+    void (*release)(void *pic, uint8_t *data);
     int  (*extract)(vlc_va_t *, picture_t *pic, uint8_t *data);
 };
 
@@ -60,18 +63,6 @@ vlc_fourcc_t vlc_va_GetChroma(enum PixelFormat hwfmt, enum PixelFormat swfmt);
 vlc_va_t *vlc_va_New(vlc_object_t *obj, AVCodecContext *,
                      enum PixelFormat, const es_format_t *fmt,
                      picture_sys_t *p_sys);
-
-/**
- * Initializes the acceleration video decoding back-end for libavcodec.
- * @param avctx libavcodec codec context
- * @param output pointer to video chroma output by the back-end [OUT]
- * @return VLC_SUCCESS on success, otherwise an error code.
- */
-static inline int vlc_va_Setup(vlc_va_t *va, AVCodecContext *avctx,
-                               vlc_fourcc_t *output)
-{
-    return va->setup(va, avctx, output);
-}
 
 /**
  * Allocates a hardware video surface for a libavcodec frame.
@@ -97,15 +88,14 @@ static inline int vlc_va_Get(vlc_va_t *va, picture_t *pic, uint8_t **data)
  * The surface has been previously allocated with vlc_va_Get().
  *
  * @param pic VLC picture being released [IN/OUT]
- * @param data data[0] pointer of the AVFrame set by vlc_va_Get()
  *
  * @note This function needs not be reentrant. However it may be called
  * concurrently with vlc_va_Get() and/or vlc_va_Extract() from other threads
  * and other frames.
  */
-static inline void vlc_va_Release(vlc_va_t *va, picture_t *pic, uint8_t *data)
+static inline void vlc_va_Release(vlc_va_t *va, picture_t *pic)
 {
-    va->release(pic, data);
+    va->release(pic, NULL);
 }
 
 /**

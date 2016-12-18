@@ -25,23 +25,22 @@
 #ifndef DASHSEGMENT_H_
 #define DASHSEGMENT_H_
 
-#include "../adaptative/playlist/Segment.h"
+#include "../adaptive/playlist/Segment.h"
 
 namespace dash
 {
     namespace mpd
     {
-        using namespace adaptative::playlist;
-        using namespace adaptative::http;
+        using namespace adaptive::playlist;
+        using namespace adaptive::http;
 
         class DashIndexSegment : public IndexSegment
         {
             public:
                 DashIndexSegment( ICanonicalUrl *parent );
-                virtual Chunk* toChunk(size_t, BaseRepresentation * = NULL); //reimpl
 
             protected:
-                virtual void onChunkDownload(void *, size_t, Chunk *, BaseRepresentation *); //reimpl
+                virtual void onChunkDownload(block_t **, SegmentChunk *, BaseRepresentation *); //reimpl
         };
 
     }

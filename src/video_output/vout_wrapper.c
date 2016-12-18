@@ -133,6 +133,9 @@ int vout_InitWrapper(vout_thread_t *vout)
     const unsigned display_pool_size = allow_dr ? __MAX(VOUT_MAX_PICTURES,
                                                         reserved_picture + decoder_picture) : 3;
     picture_pool_t *display_pool = vout_display_Pool(vd, display_pool_size);
+    if (display_pool == NULL)
+        return VLC_EGENERIC;
+
 #ifndef NDEBUG
     if ( picture_pool_GetSize(display_pool) < display_pool_size )
         msg_Warn(vout, "Not enough display buffers in the pool, requested %d got %d",
@@ -160,7 +163,6 @@ int vout_InitWrapper(vout_thread_t *vout)
         NoDrInit(vout);
     }
     sys->private_pool = picture_pool_Reserve(sys->decoder_pool, private_picture);
-    sys->display.filtered = NULL;
     return VLC_SUCCESS;
 }
 
@@ -171,7 +173,6 @@ void vout_EndWrapper(vout_thread_t *vout)
 {
     vout_thread_sys_t *sys = vout->p;
 
-    assert(!sys->display.filtered);
     if (sys->private_pool)
         picture_pool_Release(sys->private_pool);
 

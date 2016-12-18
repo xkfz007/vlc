@@ -51,8 +51,6 @@ static void VarListSelect( input_thread_t *,
  *****************************************************************************/
 void input_SendEventDead( input_thread_t *p_input )
 {
-    p_input->b_dead = true;
-
     Trigger( p_input, INPUT_EVENT_DEAD );
 }
 
@@ -78,7 +76,7 @@ void input_SendEventLength( input_thread_t *p_input, mtime_t i_length )
     if( var_GetInteger( p_input, "length" ) == i_length )
         return;
 
-    input_item_SetDuration( p_input->p->p_item, i_length );
+    input_item_SetDuration( input_priv(p_input)->p_item, i_length );
 
     val.i_int = i_length;
     var_Change( p_input, "length", VLC_VAR_SETVALUE, &val, NULL );
@@ -149,9 +147,9 @@ void input_SendEventSeekpoint( input_thread_t *p_input, int i_title, int i_seekp
     val.i_int = i_seekpoint;
     var_Change( p_input, "chapter", VLC_VAR_SETVALUE, &val, NULL );
 
-    /* "title %2i" */
-    char psz_title[10];
-    snprintf( psz_title, sizeof(psz_title), "title %2i", i_title );
+    /* "title %2u" */
+    char psz_title[sizeof ("title ") + 3 * sizeof (int)];
+    sprintf( psz_title, "title %2u", i_title );
     var_Change( p_input, psz_title, VLC_VAR_SETVALUE, &val, NULL );
 
     /* */
@@ -203,7 +201,7 @@ void input_SendEventMeta( input_thread_t *p_input )
 
     event.type = vlc_InputItemMetaChanged;
     event.u.input_item_meta_changed.meta_type = vlc_meta_ArtworkURL;
-    vlc_event_send( &p_input->p->p_item->event_manager, &event );
+    vlc_event_send( &input_priv(p_input)->p_item->event_manager, &event );
 }
 
 void input_SendEventMetaInfo( input_thread_t *p_input )
@@ -214,7 +212,7 @@ void input_SendEventMetaInfo( input_thread_t *p_input )
     vlc_event_t event;
 
     event.type = vlc_InputItemInfoChanged;
-    vlc_event_send( &p_input->p->p_item->event_manager, &event );
+    vlc_event_send( &input_priv(p_input)->p_item->event_manager, &event );
 }
 
 void input_SendEventMetaName( input_thread_t *p_input, const char *psz_name )
@@ -226,7 +224,7 @@ void input_SendEventMetaName( input_thread_t *p_input, const char *psz_name )
 
     event.type = vlc_InputItemNameChanged;
     event.u.input_item_name_changed.new_name = psz_name;
-    vlc_event_send( &p_input->p->p_item->event_manager, &event );
+    vlc_event_send( &input_priv(p_input)->p_item->event_manager, &event );
 }
 
 void input_SendEventMetaEpg( input_thread_t *p_input )
@@ -266,27 +264,30 @@ static const char *GetEsVarName( int i_cat )
         return "video-es";
     case AUDIO_ES:
         return "audio-es";
-    default:
-        assert( i_cat == SPU_ES );
+    case SPU_ES:
         return "spu-es";
+    default:
+        return NULL;
     }
 }
 void input_SendEventEsAdd( input_thread_t *p_input, int i_cat, int i_id, const char *psz_text )
 {
-    if( i_cat != UNKNOWN_ES )
-        VarListAdd( p_input, GetEsVarName( i_cat ), INPUT_EVENT_ES,
-                    i_id, psz_text );
+    const char *psz_varname = GetEsVarName( i_cat );
+    if( psz_varname )
+        VarListAdd( p_input, psz_varname, INPUT_EVENT_ES, i_id, psz_text );
 }
 void input_SendEventEsDel( input_thread_t *p_input, int i_cat, int i_id )
 {
-    if( i_cat != UNKNOWN_ES )
-        VarListDel( p_input, GetEsVarName( i_cat ), INPUT_EVENT_ES, i_id );
+    const char *psz_varname = GetEsVarName( i_cat );
+    if( psz_varname )
+        VarListDel( p_input, psz_varname, INPUT_EVENT_ES, i_id );
 }
 /* i_id == -1 will unselect */
 void input_SendEventEsSelect( input_thread_t *p_input, int i_cat, int i_id )
 {
-    if( i_cat != UNKNOWN_ES )
-        VarListSelect( p_input, GetEsVarName( i_cat ), INPUT_EVENT_ES, i_id );
+    const char *psz_varname = GetEsVarName( i_cat );
+    if( psz_varname )
+        VarListSelect( p_input, psz_varname, INPUT_EVENT_ES, i_id );
 }
 
 void input_SendEventTeletextAdd( input_thread_t *p_input,

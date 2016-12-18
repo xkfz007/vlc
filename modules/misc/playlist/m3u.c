@@ -59,9 +59,6 @@ static void DoChildren( playlist_export_t *p_export, playlist_item_t *p_root,
         playlist_item_t *p_current = p_root->pp_children[i];
         assert( p_current );
 
-        if( p_current->i_flags & PLAYLIST_SAVE_FLAG )
-            continue;
-
         if( p_current->i_children >= 0 )
         {
             DoChildren( p_export, p_current, pf_fprintf );
@@ -107,13 +104,6 @@ static void DoChildren( playlist_export_t *p_export, playlist_item_t *p_root,
         }
         vlc_mutex_unlock( &p_current->p_input->lock );
 
-        /* Stupid third party players don't understand file: URIs. */
-        char *psz_path = make_path( psz_uri );
-        if( psz_path != NULL )
-        {
-            free( psz_uri );
-            psz_uri = psz_path;
-        }
         fprintf( p_export->p_file, "%s\n", psz_uri );
         free( psz_uri );
     }

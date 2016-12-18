@@ -1,10 +1,10 @@
 # tiff
 
-TIFF_VERSION := 4.0.3
+TIFF_VERSION := 4.0.6
 TIFF_URL := http://download.osgeo.org/libtiff/tiff-$(TIFF_VERSION).tar.gz
 
 $(TARBALLS)/tiff-$(TIFF_VERSION).tar.gz:
-	$(call download,$(TIFF_URL))
+	$(call download_pkg,$(TIFF_URL),tiff)
 
 .sum-tiff: tiff-$(TIFF_VERSION).tar.gz
 

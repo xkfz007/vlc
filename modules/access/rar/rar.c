@@ -81,7 +81,7 @@ enum {
 static int PeekBlock(stream_t *s, rar_block_t *hdr)
 {
     const uint8_t *peek;
-    int peek_size = stream_Peek(s, &peek, 11);
+    int peek_size = vlc_stream_Peek(s, &peek, 11);
 
     if (peek_size < 7)
         return VLC_EGENERIC;
@@ -109,7 +109,7 @@ static int SkipBlock(stream_t *s, const rar_block_t *hdr)
 
     while (size > 0) {
         int skip = __MIN(size, INT_MAX);
-        if (stream_Read(s, NULL, skip) < skip)
+        if (vlc_stream_Read(s, NULL, skip) < skip)
             return VLC_EGENERIC;
 
         size -= skip;
@@ -139,13 +139,13 @@ static int SkipEnd(stream_t *s, const rar_block_t *hdr)
     for (;;) {
         const uint8_t *peek;
 
-        if (stream_Peek(s, &peek, rar_marker_size) < rar_marker_size)
+        if (vlc_stream_Peek(s, &peek, rar_marker_size) < rar_marker_size)
             return VLC_EGENERIC;
 
         if (!memcmp(peek, rar_marker, rar_marker_size))
             break;
 
-        if (stream_Read(s, NULL, 1) != 1)
+        if (vlc_stream_Read(s, NULL, 1) != 1)
             return VLC_EGENERIC;
     }
 
@@ -169,7 +169,7 @@ static int SkipFile(stream_t *s, int *count, rar_file_t ***file,
     if (hdr->size < (unsigned)min_size)
         return VLC_EGENERIC;
 
-    if (stream_Peek(s, &peek, min_size) < min_size)
+    if (vlc_stream_Peek(s, &peek, min_size) < min_size)
         return VLC_EGENERIC;
 
     /* */
@@ -188,7 +188,7 @@ static int SkipFile(stream_t *s, int *count, rar_file_t ***file,
     const int name_offset = (hdr->flags & RAR_BLOCK_FILE_HAS_HIGH) ? (7+33) : (7+25);
     if (name_offset + name_size <= hdr->size) {
         const int max_size = name_offset + name_size;
-        if (stream_Peek(s, &peek, max_size) < max_size) {
+        if (vlc_stream_Peek(s, &peek, max_size) < max_size) {
             free(name);
             return VLC_EGENERIC;
         }
@@ -232,7 +232,7 @@ static int SkipFile(stream_t *s, int *count, rar_file_t ***file,
     rar_file_chunk_t *chunk = malloc(sizeof(*chunk));
     if (chunk) {
         chunk->mrl = strdup(volume_mrl);
-        chunk->offset = stream_Tell(s) + hdr->size;
+        chunk->offset = vlc_stream_Tell(s) + hdr->size;
         chunk->size = hdr->add_size;
         chunk->cummulated_size = 0;
         if (current->chunk_count > 0) {
@@ -256,7 +256,7 @@ exit:
     /* We stop on the first non empty file if we cannot seek */
     if (current) {
         bool can_seek = false;
-        stream_Control(s, STREAM_CAN_SEEK, &can_seek);
+        vlc_stream_Control(s, STREAM_CAN_SEEK, &can_seek);
         if (!can_seek && current->size > 0)
             return VLC_EGENERIC;
     }
@@ -269,7 +269,7 @@ exit:
 int RarProbe(stream_t *s)
 {
     const uint8_t *peek;
-    if (stream_Peek(s, &peek, rar_marker_size) < rar_marker_size)
+    if (vlc_stream_Peek(s, &peek, rar_marker_size) < rar_marker_size)
         return VLC_EGENERIC;
     if (memcmp(peek, rar_marker, rar_marker_size))
         return VLC_EGENERIC;
@@ -317,13 +317,15 @@ int RarParse(stream_t *s, int *count, rar_file_t ***file, unsigned int *pi_nbvol
     *file = NULL;
     *pi_nbvols = 1;
 
-    const rar_pattern_t *pattern = FindVolumePattern(s->psz_path, b_extonly);
+    if( s->psz_url == NULL )
+        return VLC_EGENERIC;
+
+    const rar_pattern_t *pattern = FindVolumePattern(s->psz_url, b_extonly);
     int volume_offset = 0;
 
-    char *volume_mrl;
-    if (asprintf(&volume_mrl, "%s://%s",
-                 s->psz_access, s->psz_path) < 0)
-        return VLC_EGENERIC;
+    char *volume_mrl = strdup(s->psz_url);
+    if (volume_mrl == NULL)
+        return VLC_ENOMEM;
 
     stream_t *vol = s;
     for (;;) {
@@ -331,7 +333,7 @@ int RarParse(stream_t *s, int *count, rar_file_t ***file, unsigned int *pi_nbvol
         if (IgnoreBlock(vol, RAR_BLOCK_MARKER) ||
             IgnoreBlock(vol, RAR_BLOCK_ARCHIVE)) {
             if (vol != s)
-                stream_Delete(vol);
+                vlc_stream_Delete(vol);
             free(volume_mrl);
             return VLC_EGENERIC;
         }
@@ -363,29 +365,22 @@ int RarParse(stream_t *s, int *count, rar_file_t ***file, unsigned int *pi_nbvol
         if (has_next < 0 && *count > 0 && !(*file)[*count -1]->is_complete)
             has_next = 1;
         if (vol != s)
-            stream_Delete(vol);
+            vlc_stream_Delete(vol);
+        free(volume_mrl);
 
-        if (!has_next || !pattern) {
-            free(volume_mrl);
+        if (!has_next || !pattern)
             return VLC_SUCCESS;
-        }
 
         /* Open next volume */
         const int volume_index = pattern->start + volume_offset++;
-        if (volume_index > pattern->stop) {
-            free(volume_mrl);
+        if (volume_index > pattern->stop)
             return VLC_SUCCESS;
-        }
 
-        char *volume_base;
-        if (asprintf(&volume_base, "%s://%.*s",
-                     s->psz_access,
-                     (int)(strlen(s->psz_path) - strlen(pattern->match)), s->psz_path) < 0) {
-            free(volume_mrl);
+        char *volume_base = strndup(s->psz_url,
+                                  strlen(s->psz_url) - strlen(pattern->match));
+        if (volume_base == NULL)
             return VLC_SUCCESS;
-        }
 
-        free(volume_mrl);
         if (pattern->start) {
             if (asprintf(&volume_mrl, pattern->format, volume_base, volume_index) < 0)
                 volume_mrl = NULL;
@@ -399,10 +394,10 @@ int RarParse(stream_t *s, int *count, rar_file_t ***file, unsigned int *pi_nbvol
         if (!volume_mrl)
             return VLC_SUCCESS;
 
-        const int s_flags = s->i_flags;
-        s->i_flags |= OBJECT_FLAGS_NOINTERACT;
-        vol = stream_UrlNew(s, volume_mrl);
-        s->i_flags = s_flags;
+        const int s_flags = s->obj.flags;
+        s->obj.flags |= OBJECT_FLAGS_NOINTERACT;
+        vol = vlc_stream_NewURL(s, volume_mrl);
+        s->obj.flags = s_flags;
 
         if (!vol) {
             free(volume_mrl);

@@ -53,6 +53,7 @@
 #include <vlc_block_helper.h>
 #include "../codec/cc.h"
 #include "packetizer_helper.h"
+#include "startcode_helper.h"
 
 #define SYNC_INTRAFRAME_TEXT N_("Sync on Intra Frame")
 #define SYNC_INTRAFRAME_LONGTEXT N_("Normally the packetizer would " \
@@ -135,6 +136,7 @@ struct decoder_sys_t
 };
 
 static block_t *Packetize( decoder_t *, block_t ** );
+static void PacketizeFlush( decoder_t * );
 static block_t *GetCc( decoder_t *p_dec, bool pb_present[4] );
 
 static void PacketizeReset( void *p_private, bool b_broken );
@@ -167,7 +169,7 @@ static int Open( vlc_object_t *p_this )
 
     /* Misc init */
     packetizer_Init( &p_sys->packetizer,
-                     p_mp2v_startcode, sizeof(p_mp2v_startcode),
+                     p_mp2v_startcode, sizeof(p_mp2v_startcode), startcode_FindAnnexB,
                      NULL, 0, 4,
                      PacketizeReset, PacketizeParse, PacketizeValidate, p_dec );
 
@@ -209,6 +211,7 @@ static int Open( vlc_object_t *p_this )
     cc_Init( &p_sys->cc );
 
     p_dec->pf_packetize = Packetize;
+    p_dec->pf_flush = PacketizeFlush;
     p_dec->pf_get_cc = GetCc;
 
     return VLC_SUCCESS;
@@ -249,6 +252,13 @@ static block_t *Packetize( decoder_t *p_dec, block_t **pp_block )
     decoder_sys_t *p_sys = p_dec->p_sys;
 
     return packetizer_Packetize( &p_sys->packetizer, pp_block );
+}
+
+static void PacketizeFlush( decoder_t *p_dec )
+{
+    decoder_sys_t *p_sys = p_dec->p_sys;
+
+    packetizer_Flush( &p_sys->packetizer );
 }
 
 /*****************************************************************************
@@ -568,6 +578,7 @@ static block_t *ParseMPEGBlock( decoder_t *p_dec, block_t *p_frag )
         p_sys->b_seq_progressive = true;
         p_sys->b_low_delay = true;
 
+
         if ( !p_sys->b_inited )
         {
             msg_Dbg( p_dec, "size %dx%d fps=%.3f",
@@ -628,10 +639,70 @@ static block_t *ParseMPEGBlock( decoder_t *p_dec, block_t *p_frag )
             p_sys->i_repeat_first_field= (p_frag->p_buffer[7]>>1)&0x01;
             p_sys->i_progressive_frame = p_frag->p_buffer[8] >> 7;
         }
+        if( p_frag->i_buffer >= 10 )
+        {
+            /* Sequence display extension */
+            bool contains_color_description = (p_frag->p_buffer[4] & 0x01);
+            //uint8_t video_format = (p_frag->p_buffer[4] & 0x0f) >> 1;
+
+            if( contains_color_description )
+            {
+                uint8_t color_primaries = p_frag->p_buffer[5];
+                uint8_t color_transfer  = p_frag->p_buffer[6];
+                uint8_t color_matrix    = p_frag->p_buffer[7];
+                switch( color_primaries )
+                {
+                    case 1:
+                        p_dec->fmt_out.video.primaries = COLOR_PRIMARIES_BT709;
+                        break;
+                    case 4: /* BT.470M    */
+                    case 5: /* BT.470BG   */
+                        p_dec->fmt_out.video.primaries = COLOR_PRIMARIES_BT601_625;
+                        break;
+                    case 6: /* SMPTE 170M */
+                    case 7: /* SMPTE 240M */
+                        p_dec->fmt_out.video.primaries = COLOR_PRIMARIES_BT601_525;
+                        break;
+                    default:
+                        break;
+                }
+                switch( color_transfer )
+                {
+                    case 1:
+                        p_dec->fmt_out.video.transfer = TRANSFER_FUNC_BT709;
+                        break;
+                    case 4: /* BT.470M assumed gamma 2.2  */
+                        p_dec->fmt_out.video.transfer = TRANSFER_FUNC_SRGB;
+                        break;
+                    case 5: /* BT.470BG */
+                    case 6: /* SMPTE 170M */
+                        p_dec->fmt_out.video.transfer = TRANSFER_FUNC_BT2020;
+                        break;
+                    case 8: /* Linear */
+                        p_dec->fmt_out.video.transfer = TRANSFER_FUNC_LINEAR;
+                        break;
+                    default:
+                        break;
+                }
+                switch( color_matrix )
+                {
+                    case 1:
+                        p_dec->fmt_out.video.space = COLOR_SPACE_BT709;
+                        break;
+                    case 5: /* BT.470BG */
+                    case 6: /* SMPTE 170 M */
+                        p_dec->fmt_out.video.space = COLOR_SPACE_BT601;
+                        break;
+                    default:
+                        break;
+                }
+            }
+
+        }
     }
     else if( p_frag->p_buffer[3] == 0xb2 && p_frag->i_buffer > 4 )
     {
-        cc_Extract( &p_sys->cc, p_sys->i_top_field_first,
+        cc_ProbeAndExtract( &p_sys->cc, p_sys->i_top_field_first,
                     &p_frag->p_buffer[4], p_frag->i_buffer - 4 );
     }
     else if( p_frag->p_buffer[3] == 0x00 )

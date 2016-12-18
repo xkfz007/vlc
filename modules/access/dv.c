@@ -28,6 +28,8 @@
 # include "config.h"
 #endif
 
+#include <assert.h>
+
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_access.h>
@@ -48,7 +50,7 @@
  *****************************************************************************/
 static int  Open ( vlc_object_t * );
 static void Close( vlc_object_t * );
-static block_t *Block( access_t * );
+static block_t *Block( access_t *, bool * );
 static int Control( access_t *, int, va_list );
 
 vlc_module_begin ()
@@ -124,7 +126,6 @@ static int Open( vlc_object_t *p_this )
     msg_Dbg( p_access, "opening device" );
 
     /* Set up p_access */
-    access_InitFields( p_access );
     ACCESS_SET_CALLBACKS( NULL, Block, Control, NULL );
 
     p_access->p_sys = p_sys = malloc( sizeof( access_sys_t ) );
@@ -266,27 +267,29 @@ static void Close( vlc_object_t *p_this )
  *****************************************************************************/
 static int Control( access_t *p_access, int i_query, va_list args )
 {
+    access_sys_t *sys = p_access->p_sys;
+
     switch( i_query )
     {
         /* */
-        case ACCESS_CAN_PAUSE:
+        case STREAM_CAN_PAUSE:
             *va_arg( args, bool* ) = true;
             break;
 
-       case ACCESS_CAN_SEEK:
-       case ACCESS_CAN_FASTSEEK:
-       case ACCESS_CAN_CONTROL_PACE:
+       case STREAM_CAN_SEEK:
+       case STREAM_CAN_FASTSEEK:
+       case STREAM_CAN_CONTROL_PACE:
             *va_arg( args, bool* ) = false;
             break;
 
-        case ACCESS_GET_PTS_DELAY:
+        case STREAM_GET_PTS_DELAY:
             *va_arg( args, int64_t * ) =
                 INT64_C(1000) * var_InheritInteger( p_access, "live-caching" );
             break;
 
         /* */
-        case ACCESS_SET_PAUSE_STATE:
-            AVCPause( p_access, p_access->p_sys->i_node );
+        case STREAM_SET_PAUSE_STATE:
+            AVCPause( p_access, sys->i_node );
             break;
 
         default:
@@ -296,25 +299,27 @@ static int Control( access_t *p_access, int i_query, va_list args )
     return VLC_SUCCESS;
 }
 
-static block_t *Block( access_t *p_access )
+static block_t *Block( access_t *p_access, bool *restrict eof )
 {
     access_sys_t *p_sys = p_access->p_sys;
     block_t *p_block = NULL;
 
     vlc_mutex_lock( &p_sys->lock );
     p_block = p_sys->p_frame;
-    //msg_Dbg( p_access, "sending frame %p",p_block );
+    //msg_Dbg( p_access, "sending frame %p", (void *)p_block );
     p_sys->p_frame = NULL;
     vlc_mutex_unlock( &p_sys->lock );
 
+    (void) eof;
     return p_block;
 }
 
 static void Raw1394EventThreadCleanup( void *obj )
 {
     event_thread_t *p_ev = (event_thread_t *)obj;
+    access_sys_t *sys = p_ev->p_access->p_sys;
 
-    AVCStop( p_ev->p_access, p_ev->p_access->p_sys->i_node );
+    AVCStop( p_ev->p_access, sys->i_node );
 }
 
 static void* Raw1394EventThread( void *obj )
@@ -346,8 +351,8 @@ static void* Raw1394EventThread( void *obj )
         }
     }
 
-    vlc_cleanup_run();
-    return NULL;
+    vlc_cleanup_pop();
+    vlc_assert_unreachable();
 }
 
 static enum raw1394_iso_disposition

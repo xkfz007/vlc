@@ -33,11 +33,6 @@
 # include <config.h>
 #endif
 
-/* INT64_C and UINT64_C are only exposed to c++ if this is defined */
-#ifndef __STDC_CONSTANT_MACROS
-# define __STDC_CONSTANT_MACROS
-#endif
-
 #include <vlc_common.h>
 #include <vlc_input.h>
 #include <vlc_demux.h>
@@ -47,6 +42,8 @@
 
 #include <sidplay/sidplay2.h>
 #include <sidplay/builders/resid.h>
+
+#include <new>
 
 static int  Open (vlc_object_t *);
 static void Close (vlc_object_t *);
@@ -93,7 +90,7 @@ static int Open (vlc_object_t *obj)
         return VLC_EGENERIC;
 
     const uint8_t *peek;
-    if (stream_Peek (demux->s, &peek, 4) < 4)
+    if (vlc_stream_Peek (demux->s, &peek, 4) < 4)
         return VLC_EGENERIC;
 
     /* sidplay2 can read PSID and the newer RSID formats */
@@ -104,12 +101,12 @@ static int Open (vlc_object_t *obj)
     if (unlikely (data==NULL))
         goto error;
 
-    if (stream_Read (demux->s,data,size) < size) {
+    if (vlc_stream_Read (demux->s,data,size) < size) {
         free (data);
         goto error;
     }
 
-    tune = new SidTune(0);
+    tune = new (std::nothrow) SidTune(0);
     if (unlikely (tune==NULL)) {
         free (data);
         goto error;
@@ -120,7 +117,7 @@ static int Open (vlc_object_t *obj)
     if (!result)
         goto error;
 
-    player = new sidplay2();
+    player = new (std::nothrow) sidplay2();
     if (unlikely(player==NULL))
         goto error;
 
@@ -136,7 +133,7 @@ static int Open (vlc_object_t *obj)
     sys->info = player->info();
     sys->config = player->config();
 
-    builder = new ReSIDBuilder ("ReSID");
+    builder = new (std::nothrow) ReSIDBuilder ("ReSID");
     if (unlikely(builder==NULL))
         goto error;
 

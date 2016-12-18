@@ -98,15 +98,14 @@ static void IPCHelperThread( void *arg )
             if( p_playlist )
             {
                 playlist_AddExt( p_playlist, ppsz_argv[ i_opt ], NULL,
-                                 PLAYLIST_APPEND |
                                  (( i_opt || ulCmd == IPC_CMD_ENQUEUE ) ?
                                      0 : PLAYLIST_GO ),
-                                 PLAYLIST_END, -1, i_options,
+                                 i_options,
                                  ( char const ** )
                                      ( i_options ? &ppsz_argv[ i_opt + 1 ] :
                                                    NULL ),
                                  VLC_INPUT_OPTION_TRUSTED,
-                                 true, pl_Unlocked );
+                                 true );
             }
 
             for( ; i_options >= 0; i_options-- )

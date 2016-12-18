@@ -73,6 +73,8 @@ static int SubFilterCallback( vlc_object_t *, char const *,
                               vlc_value_t, vlc_value_t, void * );
 static int SubMarginCallback( vlc_object_t *, char const *,
                               vlc_value_t, vlc_value_t, void * );
+static int ViewpointCallback( vlc_object_t *, char const *,
+                              vlc_value_t, vlc_value_t, void * );
 
 /*****************************************************************************
  * vout_IntfInit: called during the vout creation to initialise misc things.
@@ -293,11 +295,18 @@ void vout_IntfInit( vout_thread_t *p_vout )
                 VLC_VAR_INTEGER | VLC_VAR_DOINHERIT | VLC_VAR_ISCOMMAND );
     var_AddCallback( p_vout, "sub-margin", SubMarginCallback, NULL );
 
+    var_Create( p_vout, "sub-text-scale",
+                VLC_VAR_INTEGER | VLC_VAR_DOINHERIT | VLC_VAR_ISCOMMAND );
+
     /* Mouse coordinates */
     var_Create( p_vout, "mouse-button-down", VLC_VAR_INTEGER );
     var_Create( p_vout, "mouse-moved", VLC_VAR_COORDS );
     var_Create( p_vout, "mouse-clicked", VLC_VAR_COORDS );
-    var_Create( p_vout, "mouse-object", VLC_VAR_BOOL );
+
+    /* Viewpoint */
+    var_Create( p_vout, "viewpoint", VLC_VAR_ADDRESS  | VLC_VAR_DOINHERIT );
+    var_AddCallback( p_vout, "viewpoint", ViewpointCallback, NULL );
+    var_Create( p_vout, "viewpoint-changeable", VLC_VAR_BOOL );
 
     vout_IntfReinit( p_vout );
 }
@@ -315,6 +324,7 @@ void vout_IntfReinit( vout_thread_t *p_vout )
     var_TriggerCallback( p_vout, "sub-source" );
     var_TriggerCallback( p_vout, "sub-filter" );
     var_TriggerCallback( p_vout, "sub-margin" );
+    var_TriggerCallback( p_vout, "viewpoint" );
 }
 
 /*****************************************************************************
@@ -414,7 +424,7 @@ static void VoutSaveSnapshot( vout_thread_t *p_vout )
     VoutOsdSnapshot( p_vout, p_picture, psz_filename );
 
     /* signal creation of a new snapshot file */
-    var_SetString( p_vout->p_libvlc, "snapshot-file", psz_filename );
+    var_SetString( p_vout->obj.libvlc, "snapshot-file", psz_filename );
 
     free( psz_filename );
 
@@ -446,7 +456,7 @@ void vout_EnableFilter( vout_thread_t *p_vout, const char *psz_name,
         return;
     }
 
-    if( module_provides( p_obj, "video filter2" ) )
+    if( module_provides( p_obj, "video filter" ) )
     {
         psz_filter_type = "video-filter";
     }
@@ -690,3 +700,13 @@ static int SubMarginCallback( vlc_object_t *p_this, char const *psz_cmd,
     return VLC_SUCCESS;
 }
 
+static int ViewpointCallback( vlc_object_t *p_this, char const *psz_cmd,
+                              vlc_value_t oldval, vlc_value_t newval, void *p_data)
+{
+    vout_thread_t *p_vout = (vout_thread_t *)p_this;
+    VLC_UNUSED(psz_cmd); VLC_UNUSED(oldval); VLC_UNUSED(p_data);
+
+    if( newval.p_address != NULL )
+        vout_ControlChangeViewpoint( p_vout, newval.p_address );
+    return VLC_SUCCESS;
+}

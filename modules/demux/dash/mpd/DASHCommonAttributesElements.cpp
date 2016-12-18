@@ -4,7 +4,7 @@
  *****************************************************************************
  * Copyright © 2011 VideoLAN
  *
- * Authors: Hugo Beauzée-Luyssen <beauze.h@gmail.com>
+ * Authors: Hugo Beauzée-Luyssen <hugo@beauzee.fr>
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published by
@@ -27,12 +27,14 @@
 
 #include "DASHCommonAttributesElements.h"
 
-#include "mpd/ContentDescription.h"
+#include "ContentDescription.h"
+#include "../adaptive/StreamFormat.hpp"
 
 #include <vlc_common.h>
 #include <vlc_arrays.h>
 
 using namespace dash::mpd;
+using namespace adaptive;
 
 DASHCommonAttributesElements::DASHCommonAttributesElements() :
     parX( 1 ),

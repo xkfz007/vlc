@@ -1,12 +1,12 @@
 # BPG
-BPG_VERSION := 0.9.4
+BPG_VERSION := 0.9.7
 BPG_URL := http://bellard.org/bpg/libbpg-$(BPG_VERSION).tar.gz
 
 # default disabled
 # PKGS += bpg
 
 $(TARBALLS)/libbpg-$(BPG_VERSION).tar.gz:
-	$(call download,$(BPG_URL))
+	$(call download_pkg,$(BPG_URL),bpg)
 
 .sum-bpg: libbpg-$(BPG_VERSION).tar.gz
 

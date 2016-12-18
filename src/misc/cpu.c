@@ -63,7 +63,7 @@ static uint32_t cpu_flags;
 
 #if defined (__i386__) || defined (__x86_64__) || defined (__powerpc__) \
  || defined (__ppc__) || defined (__ppc64__) || defined (__powerpc64__)
-# if !defined (_WIN32) && !defined (__OS2__)
+# if defined (HAVE_FORK)
 static bool vlc_CPU_check (const char *name, void (*func) (void))
 {
     pid_t pid = fork();
@@ -73,12 +73,10 @@ static bool vlc_CPU_check (const char *name, void (*func) (void))
         case 0:
             signal (SIGILL, SIG_DFL);
             func ();
-            //__asm__ __volatile__ ( code : : input );
             _exit (0);
         case -1:
             return false;
     }
-    //i_capabilities |= (flag);
 
     int status;
     while( waitpid( pid, &status, 0 ) == -1 );
@@ -294,7 +292,7 @@ void vlc_CPU_dump (vlc_object_t *obj)
     if (vlc_CPU_SSE4_2()) p += sprintf (p, "SSE4.2 ");
     if (vlc_CPU_SSE4A()) p += sprintf (p, "SSE4A ");
     if (vlc_CPU_AVX()) p += sprintf (p, "AVX ");
-    if (vlc_CPU_AVX2()) p += sprintf (p, "AVX ");
+    if (vlc_CPU_AVX2()) p += sprintf (p, "AVX2 ");
     if (vlc_CPU_3dNOW()) p += sprintf (p, "3DNow! ");
     if (vlc_CPU_XOP()) p += sprintf (p, "XOP ");
     if (vlc_CPU_FMA4()) p += sprintf (p, "FMA4 ");

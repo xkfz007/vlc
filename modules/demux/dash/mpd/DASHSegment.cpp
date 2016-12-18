@@ -21,19 +21,18 @@
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
-#define __STDC_CONSTANT_MACROS
 
 #ifdef HAVE_CONFIG_H
 # include "config.h"
 #endif
 
 #include "DASHSegment.h"
-#include "../adaptative/playlist/BaseRepresentation.h"
-#include "../mp4/AtomsReader.hpp"
-#include "../adaptative/http/Chunk.h"
-#include "../adaptative/playlist/AbstractPlaylist.hpp"
+#include "../adaptive/playlist/BaseRepresentation.h"
+#include "../mp4/IndexReader.hpp"
+#include "../adaptive/playlist/AbstractPlaylist.hpp"
+#include "../adaptive/playlist/SegmentChunk.hpp"
 
-using namespace adaptative::playlist;
+using namespace adaptive::playlist;
 using namespace dash::mpd;
 using namespace dash::mp4;
 
@@ -42,18 +41,11 @@ DashIndexSegment::DashIndexSegment(ICanonicalUrl *parent) :
 {
 }
 
-Chunk* DashIndexSegment::toChunk(size_t index, BaseRepresentation *ctxrep)
+void DashIndexSegment::onChunkDownload(block_t **pp_block, SegmentChunk *p_chunk, BaseRepresentation *rep)
 {
-    SegmentChunk *chunk = dynamic_cast<SegmentChunk *>(Segment::toChunk(index, ctxrep));
-    chunk->setRepresentation(ctxrep);
-    return chunk;
-}
-
-void DashIndexSegment::onChunkDownload(void *data, size_t size, Chunk *, BaseRepresentation *rep)
-{
-    if(!rep)
+    if(!rep || ((*pp_block)->i_flags & BLOCK_FLAG_HEADER) == 0 )
         return;
 
-    AtomsReader br(rep->getPlaylist()->getVLCObject());
-    br.parseBlock(data, size, rep);
+    IndexReader br(rep->getPlaylist()->getVLCObject());
+    br.parseIndex(*pp_block, rep, p_chunk->getStartByteInFile());
 }

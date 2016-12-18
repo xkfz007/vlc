@@ -81,6 +81,7 @@ static void* EncoderThread( void *obj )
         while( !p_sys->b_abort &&
                (p_pic = picture_fifo_Pop( p_sys->pp_pics )) == NULL )
             vlc_cond_wait( &p_sys->cond, &p_sys->lock_out );
+        vlc_sem_post( &p_sys->picture_pool_has_room );
 
         if( p_pic )
         {
@@ -100,6 +101,7 @@ static void* EncoderThread( void *obj )
     /*Encode what we have in the buffer on closing*/
     while( (p_pic = picture_fifo_Pop( p_sys->pp_pics )) != NULL )
     {
+        vlc_sem_post( &p_sys->picture_pool_has_room );
         p_block = id->p_encoder->pf_encode_video( id->p_encoder, p_pic );
         picture_Release( p_pic );
         block_ChainAppend( &p_sys->p_buffers, p_block );
@@ -127,10 +129,10 @@ int transcode_video_new( sout_stream_t *p_stream, sout_stream_id_sys_t *id )
      */
     id->p_decoder->fmt_out = id->p_decoder->fmt_in;
     id->p_decoder->fmt_out.i_extra = 0;
-    id->p_decoder->fmt_out.p_extra = 0;
+    id->p_decoder->fmt_out.p_extra = NULL;
+    id->p_decoder->fmt_out.psz_language = NULL;
     id->p_decoder->pf_decode_video = NULL;
     id->p_decoder->pf_get_cc = NULL;
-    id->p_decoder->pf_get_cc = 0;
     id->p_decoder->pf_vout_format_update = video_update_format_decoder;
     id->p_decoder->pf_vout_buffer_new = video_new_buffer_decoder;
     id->p_decoder->p_owner = malloc( sizeof(decoder_owner_sys_t) );
@@ -227,6 +229,8 @@ int transcode_video_new( sout_stream_t *p_stream, sout_stream_id_sys_t *id )
         free( id->p_decoder->p_owner );
         return VLC_ENOMEM;
     }
+
+    vlc_sem_init( &p_sys->picture_pool_has_room, p_sys->pool_size );
     vlc_mutex_init( &p_sys->lock_out );
     vlc_cond_init( &p_sys->cond );
     p_sys->p_buffers = NULL;
@@ -261,7 +265,7 @@ static void transcode_video_filter_init( sout_stream_t *p_stream,
     filter_chain_Reset( id->p_f_chain, p_fmt_out, p_fmt_out );
 
     /* Deinterlace */
-    if( p_stream->p_sys->b_deinterlace )
+    if( p_stream->p_sys->psz_deinterlace != NULL )
     {
         filter_chain_AppendFilter( id->p_f_chain,
                                    p_stream->p_sys->psz_deinterlace,
@@ -295,10 +299,8 @@ static void transcode_video_filter_init( sout_stream_t *p_stream,
                             &id->p_encoder->fmt_in );
         if( p_fmt_out->video.i_chroma != id->p_encoder->fmt_in.video.i_chroma )
         {
-            filter_chain_AppendFilter( id->p_uf_chain,
-                                   NULL, NULL,
-                                   p_fmt_out,
-                                   &id->p_encoder->fmt_in );
+            filter_chain_AppendConverter( id->p_uf_chain, p_fmt_out,
+                                           &id->p_encoder->fmt_in );
         }
         filter_chain_AppendFromString( id->p_uf_chain, p_stream->p_sys->psz_vf2 );
         p_fmt_out = filter_chain_GetFmtOut( id->p_uf_chain );
@@ -313,6 +315,11 @@ static void transcode_video_filter_init( sout_stream_t *p_stream,
             id->p_encoder->fmt_in.video.i_sar_den;
     }
 
+    /* Keep colorspace etc info along */
+    id->p_encoder->fmt_in.video.space     = id->p_decoder->fmt_out.video.space;
+    id->p_encoder->fmt_in.video.transfer  = id->p_decoder->fmt_out.video.transfer;
+    id->p_encoder->fmt_in.video.primaries = id->p_decoder->fmt_out.video.primaries;
+    id->p_encoder->fmt_in.video.b_color_range_full = id->p_decoder->fmt_out.video.b_color_range_full;
 }
 
 /* Take care of the scaling and chroma conversions. */
@@ -329,25 +336,58 @@ static void conversion_video_filter_append( sout_stream_id_sys_t *id )
         ( p_fmt_out->video.i_width != id->p_encoder->fmt_in.video.i_width ) ||
         ( p_fmt_out->video.i_height != id->p_encoder->fmt_in.video.i_height ) )
     {
-        filter_chain_AppendFilter( id->p_uf_chain ? id->p_uf_chain : id->p_f_chain,
-                                   NULL, NULL,
-                                   p_fmt_out,
-                                   &id->p_encoder->fmt_in );
+        filter_chain_AppendConverter( id->p_uf_chain ? id->p_uf_chain : id->p_f_chain,
+                                      p_fmt_out, &id->p_encoder->fmt_in );
     }
 }
 
-static void transcode_video_encoder_init( sout_stream_t *p_stream,
-                                          sout_stream_id_sys_t *id )
+static void transcode_video_framerate_init( sout_stream_t *p_stream,
+                                            sout_stream_id_sys_t *id,
+                                            const es_format_t *p_fmt_out )
+{
+    /* Handle frame rate conversion */
+    if( !id->p_encoder->fmt_out.video.i_frame_rate ||
+        !id->p_encoder->fmt_out.video.i_frame_rate_base )
+    {
+        if( p_fmt_out->video.i_frame_rate &&
+            p_fmt_out->video.i_frame_rate_base )
+        {
+            id->p_encoder->fmt_out.video.i_frame_rate =
+                p_fmt_out->video.i_frame_rate;
+            id->p_encoder->fmt_out.video.i_frame_rate_base =
+                p_fmt_out->video.i_frame_rate_base;
+        }
+        else
+        {
+            /* Pick a sensible default value */
+            id->p_encoder->fmt_out.video.i_frame_rate = ENC_FRAMERATE;
+            id->p_encoder->fmt_out.video.i_frame_rate_base = ENC_FRAMERATE_BASE;
+        }
+    }
+
+    id->p_encoder->fmt_in.video.i_frame_rate =
+        id->p_encoder->fmt_out.video.i_frame_rate;
+    id->p_encoder->fmt_in.video.i_frame_rate_base =
+        id->p_encoder->fmt_out.video.i_frame_rate_base;
+
+    vlc_ureduce( &id->p_encoder->fmt_in.video.i_frame_rate,
+        &id->p_encoder->fmt_in.video.i_frame_rate_base,
+        id->p_encoder->fmt_in.video.i_frame_rate,
+        id->p_encoder->fmt_in.video.i_frame_rate_base,
+        0 );
+     msg_Dbg( p_stream, "source fps %u/%u, destination %u/%u",
+        id->p_decoder->fmt_out.video.i_frame_rate,
+        id->p_decoder->fmt_out.video.i_frame_rate_base,
+        id->p_encoder->fmt_in.video.i_frame_rate,
+        id->p_encoder->fmt_in.video.i_frame_rate_base );
+
+}
+
+static void transcode_video_size_init( sout_stream_t *p_stream,
+                                     sout_stream_id_sys_t *id,
+                                     const es_format_t *p_fmt_out )
 {
     sout_stream_sys_t *p_sys = p_stream->p_sys;
-
-    const es_format_t *p_fmt_out = &id->p_decoder->fmt_out;
-    if( id->p_f_chain ) {
-        p_fmt_out = filter_chain_GetFmtOut( id->p_f_chain );
-    }
-    if( id->p_uf_chain ) {
-        p_fmt_out = filter_chain_GetFmtOut( id->p_uf_chain );
-    }
 
     /* Calculate scaling
      * width/height of source */
@@ -465,47 +505,19 @@ static void transcode_video_encoder_init( sout_stream_t *p_stream,
          i_src_visible_width, i_src_visible_height,
          i_dst_visible_width, i_dst_visible_height
      );
+};
 
-    /* Handle frame rate conversion */
-    if( !id->p_encoder->fmt_out.video.i_frame_rate ||
-        !id->p_encoder->fmt_out.video.i_frame_rate_base )
-    {
-        if( p_fmt_out->video.i_frame_rate &&
-            p_fmt_out->video.i_frame_rate_base )
-        {
-            id->p_encoder->fmt_out.video.i_frame_rate =
-                p_fmt_out->video.i_frame_rate;
-            id->p_encoder->fmt_out.video.i_frame_rate_base =
-                p_fmt_out->video.i_frame_rate_base;
-        }
-        else
-        {
-            /* Pick a sensible default value */
-            id->p_encoder->fmt_out.video.i_frame_rate = ENC_FRAMERATE;
-            id->p_encoder->fmt_out.video.i_frame_rate_base = ENC_FRAMERATE_BASE;
-        }
-    }
+static void transcode_video_sar_init( sout_stream_t *p_stream,
+                                     sout_stream_id_sys_t *id,
+                                     const es_format_t *p_fmt_out )
+{
+    int i_src_visible_width = p_fmt_out->video.i_visible_width;
+    int i_src_visible_height = p_fmt_out->video.i_visible_height;
 
-    id->p_encoder->fmt_in.video.orientation =
-        id->p_encoder->fmt_out.video.orientation =
-        id->p_decoder->fmt_in.video.orientation;
-
-    id->p_encoder->fmt_in.video.i_frame_rate =
-        id->p_encoder->fmt_out.video.i_frame_rate;
-    id->p_encoder->fmt_in.video.i_frame_rate_base =
-        id->p_encoder->fmt_out.video.i_frame_rate_base;
-
-    vlc_ureduce( &id->p_encoder->fmt_in.video.i_frame_rate,
-        &id->p_encoder->fmt_in.video.i_frame_rate_base,
-        id->p_encoder->fmt_in.video.i_frame_rate,
-        id->p_encoder->fmt_in.video.i_frame_rate_base,
-        0 );
-     msg_Dbg( p_stream, "source fps %d/%d, destination %d/%d",
-        id->p_decoder->fmt_out.video.i_frame_rate,
-        id->p_decoder->fmt_out.video.i_frame_rate_base,
-        id->p_encoder->fmt_in.video.i_frame_rate,
-        id->p_encoder->fmt_in.video.i_frame_rate_base );
-
+    if (i_src_visible_width == 0)
+        i_src_visible_width = p_fmt_out->video.i_width;
+    if (i_src_visible_height == 0)
+        i_src_visible_height = p_fmt_out->video.i_height;
 
     /* Check whether a particular aspect ratio was requested */
     if( id->p_encoder->fmt_out.video.i_sar_num <= 0 ||
@@ -513,8 +525,8 @@ static void transcode_video_encoder_init( sout_stream_t *p_stream,
     {
         vlc_ureduce( &id->p_encoder->fmt_out.video.i_sar_num,
                      &id->p_encoder->fmt_out.video.i_sar_den,
-                     (uint64_t)p_fmt_out->video.i_sar_num * i_src_visible_width  * i_dst_visible_height,
-                     (uint64_t)p_fmt_out->video.i_sar_den * i_src_visible_height * i_dst_visible_width,
+                     (uint64_t)p_fmt_out->video.i_sar_num * id->p_encoder->fmt_out.video.i_width * p_fmt_out->video.i_height,
+                     (uint64_t)p_fmt_out->video.i_sar_den * id->p_encoder->fmt_out.video.i_height * p_fmt_out->video.i_width,
                      0 );
     }
     else
@@ -534,6 +546,28 @@ static void transcode_video_encoder_init( sout_stream_t *p_stream,
     msg_Dbg( p_stream, "encoder aspect is %i:%i",
              id->p_encoder->fmt_out.video.i_sar_num * id->p_encoder->fmt_out.video.i_width,
              id->p_encoder->fmt_out.video.i_sar_den * id->p_encoder->fmt_out.video.i_height );
+
+}
+
+static void transcode_video_encoder_init( sout_stream_t *p_stream,
+                                          sout_stream_id_sys_t *id )
+{
+    const es_format_t *p_fmt_out = &id->p_decoder->fmt_out;
+    if( id->p_f_chain ) {
+        p_fmt_out = filter_chain_GetFmtOut( id->p_f_chain );
+    }
+    if( id->p_uf_chain ) {
+        p_fmt_out = filter_chain_GetFmtOut( id->p_uf_chain );
+    }
+
+    id->p_encoder->fmt_in.video.orientation =
+        id->p_encoder->fmt_out.video.orientation =
+        id->p_decoder->fmt_in.video.orientation;
+
+    transcode_video_framerate_init( p_stream, id, p_fmt_out );
+
+    transcode_video_size_init( p_stream, id, p_fmt_out );
+    transcode_video_sar_init( p_stream, id, p_fmt_out );
 
 }
 
@@ -589,8 +623,11 @@ void transcode_video_close( sout_stream_t *p_stream,
         block_ChainRelease( p_stream->p_sys->p_buffers );
     }
 
-    vlc_mutex_destroy( &p_stream->p_sys->lock_out );
-    vlc_cond_destroy( &p_stream->p_sys->cond );
+    if( p_stream->p_sys->i_threads >= 1 )
+    {
+        vlc_mutex_destroy( &p_stream->p_sys->lock_out );
+        vlc_cond_destroy( &p_stream->p_sys->cond );
+    }
 
     /* Close decoder */
     if( id->p_decoder->p_module )
@@ -668,6 +705,7 @@ static void OutputFrame( sout_stream_t *p_stream, picture_t *p_pic, sout_stream_
 
     if( p_sys->i_threads )
     {
+        vlc_sem_wait( &p_sys->picture_pool_has_room );
         vlc_mutex_lock( &p_sys->lock_out );
         picture_fifo_Push( p_sys->pp_pics, p_pic );
         vlc_cond_signal( &p_sys->cond );
@@ -766,6 +804,7 @@ int transcode_video_process( sout_stream_t *p_stream, sout_stream_id_sys_t *id,
             if( transcode_video_encoder_open( p_stream, id ) != VLC_SUCCESS )
             {
                 picture_Release( p_pic );
+                block_Release( in );
                 transcode_video_close( p_stream, id );
                 id->b_transcode = false;
                 return VLC_EGENERIC;

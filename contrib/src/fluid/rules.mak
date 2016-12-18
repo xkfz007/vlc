@@ -13,7 +13,7 @@ endif
 DEPS_fluid = glib $(DEPS_glib)
 
 $(TARBALLS)/fluidsynth-$(FLUID_VERSION).tar.bz2:
-	$(call download,$(FLUID_URL))
+	$(call download_pkg,$(FLUID_URL),fluid)
 
 .sum-fluid: fluidsynth-$(FLUID_VERSION).tar.bz2
 
@@ -41,7 +41,7 @@ FLUIDCONF := $(HOSTCONF) \
 	--disable-libsndfile-support \
 	--disable-midishare \
 	--disable-oss-support \
-  	--disable-portaudio-support \
+	--disable-portaudio-support \
 	--disable-pulse-support \
 	--without-readline
 

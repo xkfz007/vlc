@@ -18,6 +18,11 @@
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
 
+#if !defined(_WIN32_WINNT) || _WIN32_WINNT < _WIN32_WINNT_VISTA
+# undef _WIN32_WINNT
+# define _WIN32_WINNT _WIN32_WINNT_VISTA
+#endif
+
 #ifdef HAVE_CONFIG_H
 # include <config.h>
 #endif
@@ -42,37 +47,6 @@ DEFINE_PROPERTYKEY(PKEY_Device_FriendlyName, 0xa45c254e, 0xdf1c, 0x4efd,
 #include <vlc_charset.h>
 #include <vlc_modules.h>
 #include "audio_output/mmdevice.h"
-
-#if (_WIN32_WINNT < 0x600)
-static VOID WINAPI (*InitializeConditionVariable)(PCONDITION_VARIABLE);
-static BOOL WINAPI (*SleepConditionVariableCS)(PCONDITION_VARIABLE,
-                                               PCRITICAL_SECTION, DWORD);
-static VOID WINAPI (*WakeConditionVariable)(PCONDITION_VARIABLE);
-#define LOOKUP(s) \
-    if (((s) = (void *)GetProcAddress(h, #s)) == NULL) return FALSE
-
-BOOL WINAPI DllMain(HINSTANCE, DWORD, LPVOID); /* avoid warning */
-BOOL WINAPI DllMain(HINSTANCE dll, DWORD reason, LPVOID reserved)
-{
-    (void) dll;
-    (void) reserved;
-
-    switch (reason)
-    {
-        case DLL_PROCESS_ATTACH:
-        {
-            HANDLE h = GetModuleHandle(TEXT("kernel32.dll"));
-            if (unlikely(h == NULL))
-                return FALSE;
-            LOOKUP(InitializeConditionVariable);
-            LOOKUP(SleepConditionVariableCS);
-            LOOKUP(WakeConditionVariable);
-            break;
-        }
-    }
-    return TRUE;
-}
-#endif
 
 DEFINE_GUID (GUID_VLC_AUD_OUT, 0x4533f59d, 0x59ee, 0x00c6,
    0xad, 0xb2, 0xc6, 0x8b, 0x50, 0x1a, 0x66, 0x55);
@@ -140,11 +114,13 @@ struct aout_sys_t
  * synchronization between the set of audio output callbacks, MMThread()
  * and (trivially) the device and session notifications. */
 
+static int DeviceSelect(audio_output_t *, const char *);
 static int vlc_FromHR(audio_output_t *aout, HRESULT hr)
 {
-    /* Restart on unplug */
-    if (unlikely(hr == AUDCLNT_E_DEVICE_INVALIDATED))
-        aout_RestartRequest(aout, AOUT_RESTART_OUTPUT);
+    /* Select the default device (and restart) on unplug */
+    if (unlikely(hr == AUDCLNT_E_DEVICE_INVALIDATED ||
+                 hr == AUDCLNT_E_RESOURCES_INVALIDATED))
+        DeviceSelect(aout, NULL);
     return SUCCEEDED(hr) ? 0 : -1;
 }
 
@@ -189,10 +165,13 @@ static void Pause(audio_output_t *aout, bool paused, mtime_t date)
 static void Flush(audio_output_t *aout, bool wait)
 {
     aout_sys_t *sys = aout->sys;
+    HRESULT hr;
 
     EnterMTA();
-    aout_stream_Flush(sys->stream, wait);
+    hr = aout_stream_Flush(sys->stream, wait);
     LeaveMTA();
+
+    vlc_FromHR(aout, hr);
 }
 
 static int VolumeSet(audio_output_t *aout, float vol)
@@ -510,12 +489,15 @@ static bool DeviceIsRender(IMMDevice *dev)
 
     IMMEndpoint *ep = pv;
     EDataFlow flow;
-
-    if (FAILED(IMMEndpoint_GetDataFlow(ep, &flow)))
-        flow = eCapture;
+    HRESULT hr = IMMEndpoint_GetDataFlow(ep, &flow);
 
     IMMEndpoint_Release(ep);
-    return flow == eRender;
+    if (FAILED(hr) || flow != eRender)
+        return false;
+
+    DWORD pdwState;
+    hr = IMMDevice_GetState(dev, &pdwState);
+    return !FAILED(hr) && pdwState == DEVICE_STATE_ACTIVE;
 }
 
 static HRESULT DeviceUpdated(audio_output_t *aout, LPCWSTR wid)
@@ -639,8 +621,31 @@ vlc_MMNotificationClient_OnDeviceStateChanged(IMMNotificationClient *this,
     aout_sys_t *sys = vlc_MMNotificationClient_sys(this);
     audio_output_t *aout = sys->aout;
 
-    /* TODO: show device state / ignore missing devices */
-    msg_Dbg(aout, "device %ls state changed %08lx", wid, state);
+    switch (state) {
+        case DEVICE_STATE_UNPLUGGED:
+            msg_Dbg(aout, "device %ls state changed: unplugged", wid);
+            break;
+        case DEVICE_STATE_ACTIVE:
+            msg_Dbg(aout, "device %ls state changed: active", wid);
+            return DeviceUpdated(aout, wid);
+        case DEVICE_STATE_DISABLED:
+            msg_Dbg(aout, "device %ls state changed: disabled", wid);
+            break;
+        case DEVICE_STATE_NOTPRESENT:
+            msg_Dbg(aout, "device %ls state changed: not present", wid);
+            break;
+        default:
+            msg_Dbg(aout, "device %ls state changed: unknown: %08lx", wid, state);
+            return E_FAIL;
+    }
+
+    /* Unplugged, disabled or notpresent */
+    char *id = FromWide(wid);
+    if (unlikely(id == NULL))
+        return E_OUTOFMEMORY;
+    aout_HotplugReport(aout, id, NULL);
+    free(id);
+
     return S_OK;
 }
 
@@ -702,7 +707,7 @@ static int DevicesEnum(audio_output_t *aout, IMMDeviceEnumerator *it)
         char *id, *name;
 
         hr = IMMDeviceCollection_Item(devs, i, &dev);
-        if (FAILED(hr))
+        if (FAILED(hr) || !DeviceIsRender(dev))
             continue;
 
         /* Unique device ID */
@@ -728,7 +733,7 @@ static int DevicesEnum(audio_output_t *aout, IMMDeviceEnumerator *it)
     return n;
 }
 
-static int DeviceSelect(audio_output_t *aout, const char *id)
+static int DeviceSelectLocked(audio_output_t *aout, const char *id)
 {
     aout_sys_t *sys = aout->sys;
     wchar_t *device;
@@ -742,19 +747,25 @@ static int DeviceSelect(audio_output_t *aout, const char *id)
     else
         device = default_device;
 
-    EnterCriticalSection(&sys->lock);
     assert(sys->device == NULL);
     sys->device = device;
 
     WakeConditionVariable(&sys->work);
     while (sys->device != NULL)
         SleepConditionVariableCS(&sys->ready, &sys->lock, INFINITE);
-    LeaveCriticalSection(&sys->lock);
 
     if (sys->stream != NULL && sys->dev != NULL)
         /* Request restart of stream with the new device */
         aout_RestartRequest(aout, AOUT_RESTART_OUTPUT);
     return (sys->dev != NULL) ? 0 : -1;
+}
+
+static int DeviceSelect(audio_output_t *aout, const char *id)
+{
+    EnterCriticalSection(&aout->sys->lock);
+    int ret = DeviceSelectLocked(aout, id);
+    LeaveCriticalSection(&aout->sys->lock);
+    return ret;
 }
 
 /*** Initialization / deinitialization **/
@@ -1076,20 +1087,22 @@ static int Start(audio_output_t *aout, audio_sample_format_t *restrict fmt)
     if (unlikely(s == NULL))
         return -1;
 
-    s->owner.device = sys->dev;
     s->owner.activate = ActivateDevice;
 
     EnterMTA();
+    EnterCriticalSection(&sys->lock);
     for (;;)
     {
         HRESULT hr;
+        s->owner.device = sys->dev;
 
         /* TODO: Do not overload the "aout" configuration item. */
         sys->module = vlc_module_load(s, "aout stream", "$aout", false,
                                       aout_stream_Start, s, fmt, &hr);
-        if (hr != AUDCLNT_E_DEVICE_INVALIDATED || DeviceSelect(aout, NULL))
+        if (hr != AUDCLNT_E_DEVICE_INVALIDATED || DeviceSelectLocked(aout, NULL))
             break;
     }
+    LeaveCriticalSection(&sys->lock);
     LeaveMTA();
 
     if (sys->module == NULL)

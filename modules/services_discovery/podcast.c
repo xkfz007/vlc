@@ -50,7 +50,7 @@
 static int  Open ( vlc_object_t * );
 static void Close( vlc_object_t * );
 
-VLC_SD_PROBE_HELPER("podcast", "Podcasts", SD_CAT_INTERNET)
+VLC_SD_PROBE_HELPER("podcast", N_("Podcasts"), SD_CAT_INTERNET)
 
 #define URLS_TEXT N_("Podcast URLs list")
 #define URLS_LONGTEXT N_("Enter the list of podcasts to retrieve, " \
@@ -120,7 +120,7 @@ static void SaveUrls( services_discovery_t *p_sd );
  *****************************************************************************/
 static int Open( vlc_object_t *p_this )
 {
-    if( strcmp( p_this->p_parent->psz_object_type, "playlist" ) )
+    if( strcmp( p_this->obj.parent->obj.object_type, "playlist" ) )
         return VLC_EGENERIC; /* FIXME: support LibVLC SD too! */
 
     services_discovery_t *p_sd = ( services_discovery_t* )p_this;
@@ -142,9 +142,10 @@ static int Open( vlc_object_t *p_this )
     p_sys->update_type = UPDATE_URLS;
 
     p_sd->p_sys  = p_sys;
+    p_sd->description = _("Podcasts");
 
     /* Launch the callback associated with this variable */
-    vlc_object_t *pl = p_sd->p_parent;
+    vlc_object_t *pl = p_sd->obj.parent;
     var_Create( pl, "podcast-urls", VLC_VAR_STRING | VLC_VAR_DOINHERIT );
     var_AddCallback( pl, "podcast-urls", UrlsChange, p_sys );
 
@@ -170,7 +171,7 @@ static void Close( vlc_object_t *p_this )
 {
     services_discovery_t *p_sd = ( services_discovery_t* )p_this;
     services_discovery_sys_t *p_sys = p_sd->p_sys;
-    vlc_object_t *pl = p_sd->p_parent;
+    vlc_object_t *pl = p_sd->obj.parent;
     int i;
 
     vlc_cancel (p_sys->thread);
@@ -222,7 +223,7 @@ static void *Run( void *data )
 
         if( p_sys->update_type == UPDATE_URLS )
         {
-            char *psz_urls = var_GetNonEmptyString( p_sd->p_parent,
+            char *psz_urls = var_GetNonEmptyString( p_sd->obj.parent,
                                                     "podcast-urls" );
             ParseUrls( p_sd, psz_urls );
             free( psz_urls );
@@ -235,8 +236,9 @@ static void *Run( void *data )
         for( int i = 0; i < p_sd->p_sys->i_input; i++ )
         {
             input_thread_t *p_input = p_sd->p_sys->pp_input[i];
+            int state = var_GetInteger( p_input, "state" );
 
-            if( p_input->b_eof || p_input->b_error )
+            if( state == END_S || state == ERROR_S )
             {
                 input_Stop( p_input );
                 input_Close( p_input );
@@ -374,7 +376,7 @@ static void ParseRequest( services_discovery_t *p_sd )
 
     if ( ! p_sys->b_savedurls_loaded )
     {
-        char *psz_urls = var_GetNonEmptyString( p_sd->p_parent,
+        char *psz_urls = var_GetNonEmptyString( p_sd->obj.parent,
                                                 "podcast-urls" );
         ParseUrls( p_sd, psz_urls );
         free( psz_urls );

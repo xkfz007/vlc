@@ -25,6 +25,9 @@
 # include "config.h"
 #endif
 
+#include <vlc_fixups.h>
+#include <cinttypes>
+
 #include "MPD.h"
 #include "ProgramInformation.h"
 #include "Period.h"
@@ -34,8 +37,8 @@
 
 using namespace dash::mpd;
 
-MPD::MPD (stream_t *stream_, Profile profile_) :
-    AbstractPlaylist(stream_),
+MPD::MPD (vlc_object_t *p_object, Profile profile_) :
+    AbstractPlaylist(p_object),
     profile( profile_ )
 {
     programInfo.Set( NULL );
@@ -62,15 +65,34 @@ Profile MPD::getProfile() const
     return profile;
 }
 
+StreamFormat MPD::mimeToFormat(const std::string &mime)
+{
+    std::string::size_type pos = mime.find("/");
+    if(pos != std::string::npos)
+    {
+        std::string tail = mime.substr(pos + 1);
+        if(tail == "mp4")
+            return StreamFormat(StreamFormat::MP4);
+        else if (tail == "mp2t")
+            return StreamFormat(StreamFormat::MPEG2TS);
+        else if (tail == "vtt")
+            return StreamFormat(StreamFormat::WEBVTT);
+        else if (tail == "ttml+xml")
+            return StreamFormat(StreamFormat::TTML);
+    }
+    return StreamFormat();
+}
+
 void MPD::debug()
 {
-    msg_Dbg(stream, "MPD profile=%s mediaPresentationDuration=%ld minBufferTime=%ld",
+    msg_Dbg(p_object, "MPD profile=%s mediaPresentationDuration=%" PRId64
+            " minBufferTime=%" PRId64,
             static_cast<std::string>(getProfile()).c_str(),
-            duration.Get(),
-            minBufferTime.Get());
-    msg_Dbg(stream, "BaseUrl=%s", getUrlSegment().toString().c_str());
+            duration.Get() / CLOCK_FREQ,
+            minBufferTime);
+    msg_Dbg(p_object, "BaseUrl=%s", getUrlSegment().toString().c_str());
 
     std::vector<BasePeriod *>::const_iterator i;
-    for(i = getPeriods().begin(); i != getPeriods().end(); ++i)
-        (*i)->debug(VLC_OBJECT(stream));
+    for(i = periods.begin(); i != periods.end(); ++i)
+        (*i)->debug(VLC_OBJECT(p_object));
 }

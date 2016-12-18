@@ -29,107 +29,64 @@
 # include "config.h"
 #endif
 
-#include "../adaptative/playlist/SegmentInfoCommon.h"
-#include "mpd/Profile.hpp"
+#include "../adaptive/playlist/SegmentInfoCommon.h"
+#include "Profile.hpp"
 
 #include <cstdlib>
-#include <sstream>
 
 #include <vlc_common.h>
 
-namespace adaptative
+namespace adaptive
 {
     namespace playlist
     {
         class SegmentInformation;
         class MediaSegmentTemplate;
     }
-}
-
-namespace dash
-{
     namespace xml
     {
         class Node;
     }
+}
 
+namespace dash
+{
     namespace mpd
     {
         class Period;
         class AdaptationSet;
         class MPD;
 
-        using namespace adaptative::playlist;
+        using namespace adaptive::playlist;
+        using namespace adaptive;
 
         class IsoffMainParser
         {
             public:
-                IsoffMainParser             (xml::Node *root, stream_t *p_stream);
+                IsoffMainParser             (xml::Node *root, vlc_object_t *p_object,
+                                             stream_t *p_stream, const std::string &);
                 virtual ~IsoffMainParser    ();
-
-                bool            parse  (Profile profile);
-                virtual MPD*    getMPD ();
-                virtual void    setMPDBaseUrl(xml::Node *root);
+                MPD *   parse();
 
             private:
-                void    setMPDAttributes    ();
-                void    setAdaptationSets   (xml::Node *periodNode, Period *period);
-                void    setRepresentations  (xml::Node *adaptationSetNode, AdaptationSet *adaptationSet);
+                mpd::Profile getProfile     () const;
+                void    parseMPDBaseUrl     (MPD *, xml::Node *);
+                void    parseMPDAttributes  (MPD *, xml::Node *);
+                void    parseAdaptationSets (xml::Node *periodNode, Period *period);
+                void    parseRepresentations(xml::Node *adaptationSetNode, AdaptationSet *adaptationSet);
                 void    parseInitSegment    (xml::Node *, Initializable<Segment> *, SegmentInformation *);
                 void    parseTimeline       (xml::Node *, MediaSegmentTemplate *);
-                void    parsePeriods        (xml::Node *);
-                size_t  parseSegmentInformation(xml::Node *, SegmentInformation *);
+                void    parsePeriods        (MPD *, xml::Node *);
+                size_t  parseSegmentInformation(xml::Node *, SegmentInformation *, uint64_t *);
                 size_t  parseSegmentBase    (xml::Node *, SegmentInformation *);
                 size_t  parseSegmentList    (xml::Node *, SegmentInformation *);
                 size_t  parseSegmentTemplate(xml::Node *, SegmentInformation *);
                 void    parseProgramInformation(xml::Node *, MPD *);
 
                 xml::Node       *root;
-                MPD             *mpd;
+                vlc_object_t    *p_object;
                 stream_t        *p_stream;
-        };
-
-        class IsoTime
-        {
-            public:
-                IsoTime(const std::string&);
-                operator mtime_t() const;
-
-            private:
-                mtime_t time;
-        };
-
-        class UTCTime
-        {
-            public:
-                UTCTime(const std::string&);
-                operator mtime_t() const;
-
-            private:
-                mtime_t time;
-        };
-
-        template<typename T> class Integer
-        {
-            public:
-                Integer(const std::string &str)
-                {
-                    try
-                    {
-                        std::istringstream in(str);
-                        in >> value;
-                    } catch (int) {
-                        value = 0;
-                    }
-                }
-
-                operator T() const
-                {
-                    return value;
-                }
-
-            private:
-                T value;
+                std::string      playlisturl;
         };
     }
 }

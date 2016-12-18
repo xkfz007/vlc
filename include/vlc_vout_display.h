@@ -24,18 +24,24 @@
 #ifndef VLC_VOUT_DISPLAY_H
 #define VLC_VOUT_DISPLAY_H 1
 
-/**
- * \file
- * This file defines vout display structures and functions in vlc
- */
-
 #include <vlc_es.h>
 #include <vlc_picture.h>
 #include <vlc_picture_pool.h>
 #include <vlc_subpicture.h>
 #include <vlc_keys.h>
 #include <vlc_mouse.h>
+#include <vlc_vout.h>
 #include <vlc_vout_window.h>
+
+/**
+ * \defgroup video_display Video output display
+ * Video output display: output buffers and rendering
+ *
+ * \ingroup video_output
+ * @{
+ * \file
+ * Video output display modules interface
+ */
 
 /* XXX
  * Do NOT use video_format_t::i_aspect but i_sar_num/den everywhere. i_aspect
@@ -110,6 +116,7 @@ typedef struct {
         int den;
     } zoom;
 
+    vlc_viewpoint_t viewpoint;
 } vout_display_cfg_t;
 
 /**
@@ -124,7 +131,7 @@ typedef struct {
     bool has_double_click;                  /* Is double-click generated */
     bool has_hide_mouse;                    /* Is mouse automatically hidden */
     bool has_pictures_invalid;              /* Will VOUT_DISPLAY_EVENT_PICTURES_INVALID be used */
-    bool has_event_thread;                  /* Will events (key at least) be emitted using an independent thread */
+    bool needs_event_thread VLC_DEPRECATED; /* Will events (key at least) be emitted using an independent thread */
     const vlc_fourcc_t *subpicture_chromas; /* List of supported chromas for subpicture rendering. */
 } vout_display_info_t;
 
@@ -170,6 +177,10 @@ enum {
      * The cropping requested is stored by video_format_t::i_x/y_offset and
      * video_format_t::i_visible_width/height */
     VOUT_DISPLAY_CHANGE_SOURCE_CROP,   /* const video_format_t *p_source */
+
+    /* Ask the module to acknowledge/refuse VR/360° viewing direction after
+     * being requested externally */
+    VOUT_DISPLAY_CHANGE_VIEWPOINT,   /* const vout_display_cfg_t *p_cfg */
 };
 
 /**
@@ -456,5 +467,6 @@ VLC_API void vout_display_PlacePicture(vout_display_place_t *place, const video_
  */
 VLC_API void vout_display_SendMouseMovedDisplayCoordinates(vout_display_t *vd, video_orientation_t orient_display, int m_x, int m_y,
                                                            vout_display_place_t *place);
-#endif /* VLC_VOUT_DISPLAY_H */
 
+/** @} */
+#endif /* VLC_VOUT_DISPLAY_H */

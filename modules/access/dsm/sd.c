@@ -43,7 +43,6 @@
 
 int bdsm_SdOpen( vlc_object_t * );
 void bdsm_SdClose( vlc_object_t * );
-int bdsm_sd_probe_Open( vlc_object_t * );
 
 struct entry_item
 {
@@ -56,16 +55,6 @@ struct services_discovery_sys_t
     netbios_ns      *p_ns;
     vlc_array_t     *p_entry_item_list;
 };
-
-int bdsm_sd_probe_Open (vlc_object_t *p_this)
-{
-    vlc_probe_t *p_probe = (vlc_probe_t *)p_this;
-
-    vlc_sd_probe_Add( p_probe, "dsm{longname=\"Windows networks\"}",
-                      N_( "Windows networks" ), SD_CAT_LAN );
-
-    return VLC_PROBE_CONTINUE;
-}
 
 static void entry_item_append( services_discovery_t *p_sd,
                                netbios_ns_entry *p_entry,
@@ -120,8 +109,7 @@ static void netbios_ns_discover_on_entry_added( void *p_opaque,
         if( asprintf(&psz_mrl, "smb://%s", name) < 0 )
             return;
 
-        p_item = input_item_NewWithTypeExt( psz_mrl, name, 0, NULL,
-                                            0, -1, ITEM_TYPE_NODE, 1 );
+        p_item = input_item_NewDirectory( psz_mrl, name, ITEM_NET );
         msg_Dbg( p_sd, "Adding item %s", psz_mrl );
         free(psz_mrl);
 
@@ -147,6 +135,7 @@ int bdsm_SdOpen (vlc_object_t *p_this)
     if( p_sys == NULL )
         return VLC_ENOMEM;
 
+    p_sd->description = _("Windows networks");
     p_sd->p_sys = p_sys;
     p_sys->p_entry_item_list = vlc_array_new();
     if ( p_sys->p_entry_item_list == NULL )
@@ -160,8 +149,8 @@ int bdsm_SdOpen (vlc_object_t *p_this)
     callbacks.pf_on_entry_added = netbios_ns_discover_on_entry_added;
     callbacks.pf_on_entry_removed = netbios_ns_discover_on_entry_removed;
 
-    if( !netbios_ns_discover_start( p_sys->p_ns, BROADCAST_TIMEOUT,
-                                    &callbacks) )
+    if( netbios_ns_discover_start( p_sys->p_ns, BROADCAST_TIMEOUT,
+                                   &callbacks) != 0 )
         goto error;
 
     return VLC_SUCCESS;

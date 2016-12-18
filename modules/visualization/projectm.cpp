@@ -25,9 +25,6 @@
 #ifdef HAVE_CONFIG_H
 # include "config.h"
 #endif
-#ifndef __STDC_CONSTANT_MACROS
-# define __STDC_CONSTANT_MACROS
-#endif
 
 #include <vlc_common.h>
 #include <vlc_plugin.h>
@@ -323,6 +320,7 @@ static void *Thread( void *p_data )
     settings.aspectCorrection     = 1;
     settings.easterEgg            = 1;
     settings.shuffleEnabled       = 1;
+    settings.softCutRatingsEnabled= false;
 
     p_projectm = new projectM( settings );
 

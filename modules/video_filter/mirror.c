@@ -35,6 +35,7 @@
 #include <vlc_plugin.h>
 #include <vlc_atomic.h>
 #include <vlc_filter.h>
+#include <vlc_picture.h>
 #include "filter_picture.h"
 
 /*****************************************************************************
@@ -81,7 +82,7 @@ vlc_module_begin ()
     set_help( N_("Splits video in two same parts, like in a mirror") )
     set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VFILTER )
-    set_capability( "video filter2", 0 )
+    set_capability( "video filter", 0 )
     add_integer( CFG_PREFIX "split", 0, ORIENTATION_TEXT,
                 ORIENTATION_LONGTEXT, false )
         change_integer_list( pi_orientation_values,
@@ -186,7 +187,6 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_pic )
 {
     picture_t *p_outpic;
     bool b_vertical_split, b_left_to_right;
-    int i_index;
 
     if( !p_pic ) return NULL;
 
@@ -202,7 +202,7 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_pic )
         return NULL;
     }
 
-    for( i_index = 0 ; i_index < p_pic->i_planes ; i_index++ )
+    for( int i_index = 0 ; i_index < p_pic->i_planes ; i_index++ )
     {
         if ( b_vertical_split )
             VerticalMirror( p_pic, p_outpic, i_index, b_left_to_right );

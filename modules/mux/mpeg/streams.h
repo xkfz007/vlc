@@ -17,14 +17,15 @@
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
-#ifndef _STREAMS_H
-#define _STREAMS_H 1
+#ifndef VLC_MPEG_STREAMS_H_
+#define VLC_MPEG_STREAMS_H_
 
 typedef struct
 {
-    int             i_pid;
+    uint16_t        i_pid;
 
-    int             i_continuity_counter;
+    uint8_t         i_stream_type;
+    uint8_t         i_continuity_counter;
     bool            b_discontinuity;
 
 } ts_stream_t;
@@ -33,21 +34,18 @@ typedef struct
 {
     vlc_fourcc_t    i_codec;
 
-    int             i_stream_type;
-    int             i_stream_id;
+    int             i_stream_id; /* keep as int for drac */
 
-    /* to be used for carriege of DIV3 */
-    vlc_fourcc_t    i_bih_codec;
-    int             i_bih_width, i_bih_height;
+    int             i_width, i_height;
 
     /* Specific to mpeg4 in mpeg2ts */
     int             i_es_id;
 
-    int             i_extra;
+    size_t          i_extra;
     uint8_t         *p_extra;
 
     /* language is iso639-2T */
-    int             i_langs;
+    size_t          i_langs;
     uint8_t         *lang;
 } pes_stream_t;
 

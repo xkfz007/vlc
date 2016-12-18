@@ -1,10 +1,10 @@
 # jpeg
 
-OPENJPEG_VERSION := 1.5.0
-OPENJPEG_URL := http://openjpeg.googlecode.com/files/openjpeg-$(OPENJPEG_VERSION).tar.gz
+OPENJPEG_VERSION := version.1.5
+OPENJPEG_URL := https://github.com/uclouvain/openjpeg/archive/$(OPENJPEG_VERSION).tar.gz
 
 $(TARBALLS)/openjpeg-$(OPENJPEG_VERSION).tar.gz:
-	$(call download,$(OPENJPEG_URL))
+	$(call download_pkg,$(OPENJPEG_URL),openjpeg)
 
 .sum-openjpeg: openjpeg-$(OPENJPEG_VERSION).tar.gz
 
@@ -14,6 +14,7 @@ openjpeg: openjpeg-$(OPENJPEG_VERSION).tar.gz .sum-openjpeg
 ifdef HAVE_VISUALSTUDIO
 	$(APPLY) $(SRC)/openjpeg/msvc.patch
 endif
+	$(APPLY) $(SRC)/openjpeg/restrict.patch
 	$(UPDATE_AUTOCONFIG)
 	$(MOVE)
 

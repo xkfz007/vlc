@@ -37,10 +37,15 @@
 #include "omxil_utils.h"
 
 #include "mediacodec.h"
-#include "../../video_output/android/utils.h"
+
+char* MediaCodec_GetName(vlc_object_t *p_obj, const char *psz_mime,
+                         size_t h264_profile);
 
 #define THREAD_NAME "mediacodec_ndk"
-extern JNIEnv *jni_get_env(const char *name);
+
+/* Not in NdkMedia API but we need it since we send config data via input
+ * buffers and not via "csd-*" buffers from AMediaFormat */
+#define AMEDIACODEC_FLAG_CODEC_CONFIG 2
 
 /*****************************************************************************
  * NdkMediaError.h
@@ -102,7 +107,7 @@ typedef struct AMediaCrypto AMediaCrypto;
  * Ndk symbols
  *****************************************************************************/
 
-typedef AMediaCodec* (*pf_AMediaCodec_createDecoderByType)(const char *mime_type);
+typedef AMediaCodec* (*pf_AMediaCodec_createCodecByName)(const char *name);
 
 typedef media_status_t (*pf_AMediaCodec_configure)(AMediaCodec*,
         const AMediaFormat* format,
@@ -138,6 +143,9 @@ typedef uint8_t* (*pf_AMediaCodec_getOutputBuffer)(AMediaCodec*,
 typedef media_status_t (*pf_AMediaCodec_releaseOutputBuffer)(AMediaCodec*,
         size_t idx, bool render);
 
+typedef media_status_t (*pf_AMediaCodec_setOutputSurface)(AMediaCodec*,
+        ANativeWindow *surface);
+
 typedef AMediaFormat *(*pf_AMediaFormat_new)();
 typedef media_status_t (*pf_AMediaFormat_delete)(AMediaFormat*);
 
@@ -153,7 +161,7 @@ typedef bool (*pf_AMediaFormat_getInt32)(AMediaFormat*,
 struct syms
 {
     struct {
-        pf_AMediaCodec_createDecoderByType createDecoderByType;
+        pf_AMediaCodec_createCodecByName createCodecByName;
         pf_AMediaCodec_configure configure;
         pf_AMediaCodec_start start;
         pf_AMediaCodec_stop stop;
@@ -166,6 +174,7 @@ struct syms
         pf_AMediaCodec_dequeueOutputBuffer dequeueOutputBuffer;
         pf_AMediaCodec_getOutputBuffer getOutputBuffer;
         pf_AMediaCodec_releaseOutputBuffer releaseOutputBuffer;
+        pf_AMediaCodec_setOutputSurface setOutputSurface;
     } AMediaCodec;
     struct {
         pf_AMediaFormat_new new;
@@ -176,7 +185,6 @@ struct syms
     } AMediaFormat;
 };
 static struct syms syms;
-static native_window_api_t anw_syms;
 
 struct members
 {
@@ -187,7 +195,7 @@ struct members
 static struct members members[] =
 {
 #define OFF(x) offsetof(struct syms, AMediaCodec.x)
-    { "AMediaCodec_createDecoderByType", OFF(createDecoderByType), true },
+    { "AMediaCodec_createCodecByName", OFF(createCodecByName), true },
     { "AMediaCodec_configure", OFF(configure), true },
     { "AMediaCodec_start", OFF(start), true },
     { "AMediaCodec_stop", OFF(stop), true },
@@ -200,6 +208,7 @@ static struct members members[] =
     { "AMediaCodec_dequeueOutputBuffer", OFF(dequeueOutputBuffer), true },
     { "AMediaCodec_getOutputBuffer", OFF(getOutputBuffer), true },
     { "AMediaCodec_releaseOutputBuffer", OFF(releaseOutputBuffer), true },
+    { "AMediaCodec_setOutputSurface", OFF(setOutputSurface), false },
 #undef OFF
 #define OFF(x) offsetof(struct syms, AMediaFormat.x)
     { "AMediaFormat_new", OFF(new), true },
@@ -242,12 +251,6 @@ InitSymbols(mc_api *api)
         }
         *(void **)((uint8_t*)&syms + members[i].offset) = sym;
     }
-    void *anw_handle = LoadNativeWindowAPI(&anw_syms);
-    if (!anw_handle)
-    {
-        dlclose(ndk_handle);
-        goto end;
-    }
 
     i_init_state = 1;
 end:
@@ -267,7 +270,7 @@ struct mc_api_sys
 {
     AMediaCodec* p_codec;
     AMediaFormat* p_format;
-    ANativeWindow* p_anw;
+    AMediaCodecBufferInfo info;
 };
 
 /*****************************************************************************
@@ -278,8 +281,6 @@ static int Stop(mc_api *api)
     mc_api_sys *p_sys = api->p_sys;
 
     api->b_direct_rendering = false;
-    api->b_support_interlaced = false;
-    api->psz_name = NULL;
 
     if (p_sys->p_codec)
     {
@@ -296,30 +297,27 @@ static int Stop(mc_api *api)
         syms.AMediaFormat.delete(p_sys->p_format);
         p_sys->p_format = NULL;
     }
-    if (p_sys->p_anw)
-    {
-        anw_syms.winRelease(p_sys->p_anw);
-        p_sys->p_anw = NULL;
-    }
 
     msg_Dbg(api->p_obj, "MediaCodec via NDK closed");
-    return VLC_SUCCESS;
+    return 0;
 }
 
 /*****************************************************************************
  * Start
  *****************************************************************************/
-static int Start(mc_api *api, jobject jsurface, const char *psz_mime,
-                 int i_width, int i_height, size_t h264_profile, int i_angle)
+static int Start(mc_api *api, union mc_api_args *p_args)
 {
     mc_api_sys *p_sys = api->p_sys;
-    int i_ret = VLC_EGENERIC;
-    (void) h264_profile;
+    int i_ret = MC_API_ERROR;
+    ANativeWindow *p_anw = NULL;
 
-    p_sys->p_codec = syms.AMediaCodec.createDecoderByType(psz_mime);
+    assert(api->psz_mime && api->psz_name);
+
+    p_sys->p_codec = syms.AMediaCodec.createCodecByName(api->psz_name);
     if (!p_sys->p_codec)
     {
-        msg_Err(api->p_obj, "AMediaCodec.createDecoderByType for %s failed", psz_mime);
+        msg_Err(api->p_obj, "AMediaCodec.createCodecByName for %s failed",
+                api->psz_name);
         goto error;
     }
 
@@ -330,22 +328,32 @@ static int Start(mc_api *api, jobject jsurface, const char *psz_mime,
         goto error;
     }
 
-    syms.AMediaFormat.setString(p_sys->p_format, "mime", psz_mime);
-    syms.AMediaFormat.setInt32(p_sys->p_format, "width", i_width);
-    syms.AMediaFormat.setInt32(p_sys->p_format, "height", i_height);
-    syms.AMediaFormat.setInt32(p_sys->p_format, "rotation-degrees", i_angle);
-
-    if (jsurface)
+    syms.AMediaFormat.setInt32(p_sys->p_format, "encoder", 0);
+    syms.AMediaFormat.setString(p_sys->p_format, "mime", api->psz_mime);
+    /* No limits for input size */
+    syms.AMediaFormat.setInt32(p_sys->p_format, "max-input-size", 0);
+    if (api->i_cat == VIDEO_ES)
     {
-        JNIEnv *env;
-
-        if (!(env = jni_get_env(THREAD_NAME)))
-            goto error;
-        p_sys->p_anw = anw_syms.winFromSurface(env, jsurface);
+        syms.AMediaFormat.setInt32(p_sys->p_format, "width", p_args->video.i_width);
+        syms.AMediaFormat.setInt32(p_sys->p_format, "height", p_args->video.i_height);
+        syms.AMediaFormat.setInt32(p_sys->p_format, "rotation-degrees", p_args->video.i_angle);
+        if (p_args->video.p_surface)
+        {
+            p_anw = p_args->video.p_surface;
+            if (p_args->video.b_tunneled_playback)
+                syms.AMediaFormat.setInt32(p_sys->p_format,
+                                           "feature-tunneled-playback",
+                                           p_args->video.b_tunneled_playback);
+        }
+    }
+    else
+    {
+        syms.AMediaFormat.setInt32(p_sys->p_format, "sample-rate", p_args->audio.i_sample_rate);
+        syms.AMediaFormat.setInt32(p_sys->p_format, "channel-count", p_args->audio.i_channel_count);
     }
 
     if (syms.AMediaCodec.configure(p_sys->p_codec, p_sys->p_format,
-                                   p_sys->p_anw, NULL, 0) != AMEDIA_OK)
+                                   p_anw, NULL, 0) != AMEDIA_OK)
     {
         msg_Err(api->p_obj, "AMediaCodec.configure failed");
         goto error;
@@ -357,14 +365,12 @@ static int Start(mc_api *api, jobject jsurface, const char *psz_mime,
     }
 
     api->b_started = true;
-    api->b_direct_rendering = !!p_sys->p_anw;
-    api->b_support_interlaced = true;
-    api->psz_name = ""; // TODO
-    i_ret = VLC_SUCCESS;
+    api->b_direct_rendering = !!p_anw;
+    i_ret = 0;
 
     msg_Dbg(api->p_obj, "MediaCodec via NDK opened");
 error:
-    if (i_ret != VLC_SUCCESS)
+    if (i_ret != 0)
         Stop(api);
     return i_ret;
 }
@@ -377,51 +383,61 @@ static int Flush(mc_api *api)
     mc_api_sys *p_sys = api->p_sys;
 
     if (syms.AMediaCodec.flush(p_sys->p_codec) == AMEDIA_OK)
-        return VLC_SUCCESS;
+        return 0;
     else
-        return VLC_EGENERIC;
+        return MC_API_ERROR;
 }
 
 /*****************************************************************************
- * PutInput
+ * DequeueInput
  *****************************************************************************/
-static int PutInput(mc_api *api, const void *p_buf, size_t i_size,
-                    mtime_t i_ts, bool b_config, mtime_t i_timeout)
+static int DequeueInput(mc_api *api, mtime_t i_timeout)
 {
     mc_api_sys *p_sys = api->p_sys;
     ssize_t i_index;
-    uint8_t *p_mc_buf;
-    size_t i_mc_size;
-    (void) b_config;
 
     i_index = syms.AMediaCodec.dequeueInputBuffer(p_sys->p_codec, i_timeout);
-    if (i_index < 0)
+    if (i_index >= 0)
+        return i_index;
+    else if (i_index == AMEDIACODEC_INFO_TRY_AGAIN_LATER)
+        return MC_API_INFO_TRYAGAIN;
+    else
     {
-        if (i_index == AMEDIACODEC_INFO_TRY_AGAIN_LATER)
-            return 0;
-        else
-        {
-            msg_Err(api->p_obj, "AMediaCodec.dequeueInputBuffer failed");
-            return VLC_EGENERIC;
-        }
+        msg_Err(api->p_obj, "AMediaCodec.dequeueInputBuffer failed");
+        return MC_API_ERROR;
     }
+}
+
+/*****************************************************************************
+ * QueueInput
+ *****************************************************************************/
+static int QueueInput(mc_api *api, int i_index, const void *p_buf,
+                      size_t i_size, mtime_t i_ts, bool b_config)
+{
+    mc_api_sys *p_sys = api->p_sys;
+    uint8_t *p_mc_buf;
+    size_t i_mc_size;
+    int i_flags = (b_config ? AMEDIACODEC_FLAG_CODEC_CONFIG : 0)
+                | (p_buf == NULL ? AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM : 0);
+
+    assert(i_index >= 0);
 
     p_mc_buf = syms.AMediaCodec.getInputBuffer(p_sys->p_codec,
                                                i_index, &i_mc_size);
     if (!p_mc_buf)
-        return VLC_EGENERIC;
+        return MC_API_ERROR;
 
     if (i_mc_size > i_size)
         i_mc_size = i_size;
     memcpy(p_mc_buf, p_buf, i_mc_size);
 
     if (syms.AMediaCodec.queueInputBuffer(p_sys->p_codec, i_index, 0, i_mc_size,
-                                          i_ts, 0) == AMEDIA_OK)
-        return 1;
+                                          i_ts, i_flags) == AMEDIA_OK)
+        return 0;
     else
     {
         msg_Err(api->p_obj, "AMediaCodec.queueInputBuffer failed");
-        return VLC_EGENERIC;
+        return MC_API_ERROR;
     }
 }
 
@@ -433,27 +449,50 @@ static int32_t GetFormatInteger(AMediaFormat *p_format, const char *psz_name)
 }
 
 /*****************************************************************************
- * GetOutput
+ * DequeueOutput
  *****************************************************************************/
-static int GetOutput(mc_api *api, mc_api_out *p_out, mtime_t i_timeout)
+static int DequeueOutput(mc_api *api, mtime_t i_timeout)
 {
     mc_api_sys *p_sys = api->p_sys;
-    AMediaCodecBufferInfo info;
     ssize_t i_index;
 
-    i_index = syms.AMediaCodec.dequeueOutputBuffer(p_sys->p_codec, &info,
+    i_index = syms.AMediaCodec.dequeueOutputBuffer(p_sys->p_codec, &p_sys->info,
                                                    i_timeout);
+
+    if (i_index >= 0)
+        return i_index;
+    else if (i_index == AMEDIACODEC_INFO_TRY_AGAIN_LATER)
+        return MC_API_INFO_TRYAGAIN;
+    else if (i_index == AMEDIACODEC_INFO_OUTPUT_BUFFERS_CHANGED)
+        return MC_API_INFO_OUTPUT_BUFFERS_CHANGED;
+    else if (i_index == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED)
+        return MC_API_INFO_OUTPUT_FORMAT_CHANGED;
+    else
+    {
+        msg_Err(api->p_obj, "AMediaCodec.dequeueOutputBuffer failed");
+        return MC_API_ERROR;
+    }
+}
+
+/*****************************************************************************
+ * GetOutput
+ *****************************************************************************/
+static int GetOutput(mc_api *api, int i_index, mc_api_out *p_out)
+{
+    mc_api_sys *p_sys = api->p_sys;
+
     if (i_index >= 0)
     {
         p_out->type = MC_OUT_TYPE_BUF;
-        p_out->u.buf.i_index = i_index;
+        p_out->buf.i_index = i_index;
 
-        p_out->u.buf.i_ts = info.presentationTimeUs;
+        p_out->buf.i_ts = p_sys->info.presentationTimeUs;
+        p_out->b_eos = p_sys->info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM;
 
         if (api->b_direct_rendering)
         {
-            p_out->u.buf.p_ptr = NULL;
-            p_out->u.buf.i_size = 0;
+            p_out->buf.p_ptr = NULL;
+            p_out->buf.i_size = 0;
         }
         else
         {
@@ -461,42 +500,44 @@ static int GetOutput(mc_api *api, mc_api_out *p_out, mtime_t i_timeout)
             uint8_t *p_mc_buf = syms.AMediaCodec.getOutputBuffer(p_sys->p_codec,
                                                                  i_index,
                                                                  &i_mc_size);
-            if (!p_mc_buf)
+            /* p_mc_buf can be NULL in case of EOS */
+            if (!p_mc_buf && !p_out->b_eos)
             {
                 msg_Err(api->p_obj, "AMediaCodec.getOutputBuffer failed");
-                return VLC_EGENERIC;
+                return MC_API_ERROR;
             }
-            p_out->u.buf.p_ptr = p_mc_buf + info.offset;
-            p_out->u.buf.i_size = i_mc_size;
+            p_out->buf.p_ptr = p_mc_buf + p_sys->info.offset;
+            p_out->buf.i_size = p_sys->info.size;
         }
         return 1;
     }
-    else if (i_index == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED)
+    else if (i_index == MC_API_INFO_OUTPUT_FORMAT_CHANGED)
     {
         AMediaFormat *format = syms.AMediaCodec.getOutputFormat(p_sys->p_codec);
 
         p_out->type = MC_OUT_TYPE_CONF;
-        p_out->u.conf.width = GetFormatInteger(format, "width");
-        p_out->u.conf.height = GetFormatInteger(format, "height");
-        p_out->u.conf.stride = GetFormatInteger(format, "stride");
-        p_out->u.conf.slice_height = GetFormatInteger(format, "slice-height");
-        p_out->u.conf.pixel_format = GetFormatInteger(format, "color-format");
-        p_out->u.conf.crop_left = GetFormatInteger(format, "crop-left");
-        p_out->u.conf.crop_top = GetFormatInteger(format, "crop-top");
-        p_out->u.conf.crop_right = GetFormatInteger(format, "crop-right");
-        p_out->u.conf.crop_bottom = GetFormatInteger(format, "crop-bottom");
+        p_out->b_eos = false;
+        if (api->i_cat == VIDEO_ES)
+        {
+            p_out->conf.video.width         = GetFormatInteger(format, "width");
+            p_out->conf.video.height        = GetFormatInteger(format, "height");
+            p_out->conf.video.stride        = GetFormatInteger(format, "stride");
+            p_out->conf.video.slice_height  = GetFormatInteger(format, "slice-height");
+            p_out->conf.video.pixel_format  = GetFormatInteger(format, "color-format");
+            p_out->conf.video.crop_left     = GetFormatInteger(format, "crop-left");
+            p_out->conf.video.crop_top      = GetFormatInteger(format, "crop-top");
+            p_out->conf.video.crop_right    = GetFormatInteger(format, "crop-right");
+            p_out->conf.video.crop_bottom   = GetFormatInteger(format, "crop-bottom");
+        }
+        else
+        {
+            p_out->conf.audio.channel_count = GetFormatInteger(format, "channel-count");
+            p_out->conf.audio.channel_mask  = GetFormatInteger(format, "channel-mask");
+            p_out->conf.audio.sample_rate   = GetFormatInteger(format, "sample-rate");
+        }
         return 1;
     }
-    else if (i_index == AMEDIACODEC_INFO_OUTPUT_BUFFERS_CHANGED
-          || i_index == AMEDIACODEC_INFO_TRY_AGAIN_LATER)
-    {
-        return 0;
-    }
-    else
-    {
-        msg_Err(api->p_obj, "AMediaCodec.dequeueOutputBuffer failed");
-        return VLC_EGENERIC;
-    }
+    return 0;
 }
 
 /*****************************************************************************
@@ -506,20 +547,50 @@ static int ReleaseOutput(mc_api *api, int i_index, bool b_render)
 {
     mc_api_sys *p_sys = api->p_sys;
 
+    assert(i_index >= 0);
     if (syms.AMediaCodec.releaseOutputBuffer(p_sys->p_codec, i_index, b_render)
                                              == AMEDIA_OK)
-        return VLC_SUCCESS;
+        return 0;
     else
-        return VLC_EGENERIC;
+        return MC_API_ERROR;
 }
 
+/*****************************************************************************
+ * SetOutputSurface
+ *****************************************************************************/
+static int SetOutputSurface(mc_api *api, void *p_surface, void *p_jsurface)
+{
+    (void) p_jsurface;
+    assert(p_surface != NULL);
+    mc_api_sys *p_sys = api->p_sys;
+
+    return syms.AMediaCodec.setOutputSurface != NULL
+        && syms.AMediaCodec.setOutputSurface(p_sys->p_codec, p_surface)
+        == AMEDIA_OK ? 0 : MC_API_ERROR;
+}
 
 /*****************************************************************************
  * Clean
  *****************************************************************************/
 static void Clean(mc_api *api)
 {
+    free(api->psz_name);
     free(api->p_sys);
+}
+
+/*****************************************************************************
+ * Configure
+ *****************************************************************************/
+static int Configure(mc_api * api, size_t i_h264_profile)
+{
+    free(api->psz_name);
+    api->psz_name = MediaCodec_GetName(api->p_obj, api->psz_mime,
+                                       i_h264_profile);
+    if (!api->psz_name)
+        return MC_API_ERROR;
+    api->i_quirks = OMXCodec_GetQuirks(api->i_cat, api->i_codec, api->psz_name,
+                                       strlen(api->psz_name));
+    return 0;
 }
 
 /*****************************************************************************
@@ -528,18 +599,24 @@ static void Clean(mc_api *api)
 int MediaCodecNdk_Init(mc_api *api)
 {
     if (!InitSymbols(api))
-        return VLC_EGENERIC;
+        return MC_API_ERROR;
 
     api->p_sys = calloc(1, sizeof(mc_api_sys));
     if (!api->p_sys)
-        return VLC_EGENERIC;
+        return MC_API_ERROR;
 
     api->clean = Clean;
+    api->configure = Configure;
     api->start = Start;
     api->stop = Stop;
     api->flush = Flush;
-    api->put_in = PutInput;
+    api->dequeue_in = DequeueInput;
+    api->queue_in = QueueInput;
+    api->dequeue_out = DequeueOutput;
     api->get_out = GetOutput;
     api->release_out = ReleaseOutput;
-    return VLC_SUCCESS;
+    api->set_output_surface = SetOutputSurface;
+
+    api->b_support_interlaced = true;
+    return 0;
 }

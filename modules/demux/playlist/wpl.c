@@ -32,7 +32,6 @@
 
 struct demux_sys_t
 {
-    xml_t* p_xml;
     xml_reader_t* p_reader;
     char* psz_prefix;
 };
@@ -57,9 +56,9 @@ static void read_head( demux_t* p_demux, input_item_t* p_input )
                 psz_attr = xml_ReaderNextAttr( p_sys->p_reader, &psz_val );
                 if ( !psz_attr || !psz_val )
                     break;
-                if ( !strcasecmp( psz_attr, "name" ) )
+                if ( !strcasecmp( psz_attr, "name" ) && !psz_attribute_name )
                     psz_attribute_name = strdup( psz_val );
-                else if ( !strcasecmp( psz_attr, "content" ) )
+                else if ( !strcasecmp( psz_attr, "content" ) && !psz_attribute_value )
                     psz_attribute_value = strdup( psz_val );
             }
             if ( psz_attribute_name && psz_attribute_value )
@@ -115,7 +114,7 @@ static void read_body( demux_t* p_demux, input_item_node_t* p_node )
                     char* mrl = ProcessMRL( psz_val, p_sys->psz_prefix );
                     if ( unlikely( !mrl ) )
                         return;
-                    input_item_t* p_item = input_item_NewExt( mrl, NULL, 0, NULL, 0, -1 );
+                    input_item_t* p_item = input_item_New( mrl, NULL );
                     if ( likely( p_item ) )
                     {
                         input_item_node_AppendItem( p_node, p_item );
@@ -141,6 +140,8 @@ static int Demux( demux_t* p_demux )
     input_item_t* p_input = GetCurrentItem( p_demux );
     input_item_node_t* p_node = input_item_node_Create( p_input );
     p_sys->psz_prefix = FindPrefix( p_demux );
+    if( unlikely(p_sys->psz_prefix == NULL) )
+        return VLC_DEMUXER_EOF;
 
     do
     {
@@ -164,8 +165,6 @@ void Close_WPL( vlc_object_t* p_this )
     free( p_sys->psz_prefix );
     if ( p_sys->p_reader )
         xml_ReaderDelete( p_sys->p_reader );
-    if ( p_sys->p_xml )
-        xml_Delete( p_sys->p_xml );
     free( p_sys );
 }
 
@@ -181,31 +180,45 @@ int Import_WPL( vlc_object_t* p_this )
     DEMUX_INIT_COMMON();
 
     demux_sys_t* p_sys = p_demux->p_sys;
-
-    p_sys->p_xml = xml_Create( p_demux );
-    if ( !p_sys->p_xml )
+    uint8_t *p_peek;
+    ssize_t i_peek = vlc_stream_Peek( p_demux->s, (const uint8_t **) &p_peek, 2048 );
+    if( unlikely( i_peek <= 0 ) )
     {
-        msg_Err( p_demux, "Failed to create an XML parser" );
         Close_WPL( p_this );
         return VLC_EGENERIC;
     }
 
-    p_sys->p_reader = xml_ReaderCreate( p_sys->p_xml, p_demux->s );
+    stream_t *p_probestream = vlc_stream_MemoryNew( p_demux->s, p_peek, i_peek, true );
+    if( unlikely( !p_probestream ) )
+    {
+        Close_WPL( p_this );
+        return VLC_EGENERIC;
+    }
+
+    p_sys->p_reader = xml_ReaderCreate( p_this, p_probestream );
     if ( !p_sys->p_reader )
     {
         msg_Err( p_demux, "Failed to create an XML reader" );
         Close_WPL( p_this );
+        vlc_stream_Delete( p_probestream );
         return VLC_EGENERIC;
     }
 
+    const int i_flags = p_sys->p_reader->obj.flags;
+    p_sys->p_reader->obj.flags |= OBJECT_FLAGS_QUIET;
     const char* psz_name;
     int type = xml_ReaderNextNode( p_sys->p_reader, &psz_name );
+    p_sys->p_reader->obj.flags = i_flags;
     if ( type != XML_READER_STARTELEM || strcasecmp( psz_name, "smil" ) )
     {
         msg_Err( p_demux, "Invalid WPL playlist. Root element should have been <smil>" );
         Close_WPL( p_this );
+        vlc_stream_Delete( p_probestream );
         return VLC_EGENERIC;
     }
+
+    p_sys->p_reader = xml_ReaderReset( p_sys->p_reader, p_demux->s );
+    vlc_stream_Delete( p_probestream );
 
     msg_Dbg( p_demux, "Found valid WPL playlist" );
 

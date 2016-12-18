@@ -79,13 +79,13 @@ static int Open( vlc_object_t * p_this )
 
     es_format_t  fmt;
 
-    if( stream_Peek( p_demux->s, &p_peek, 4 ) < 4 )
+    if( vlc_stream_Peek( p_demux->s, &p_peek, 4 ) < 4 )
     {
         msg_Err( p_demux, "cannot peek" );
         return VLC_EGENERIC;
     }
 
-    if( p_demux->b_force )
+    if( p_demux->obj.force )
         b_forced = true;
 
     if( p_peek[0] != 0x00 || p_peek[1] != 0x00 || p_peek[2] != 0x01 )
@@ -145,7 +145,7 @@ static int Demux( demux_t *p_demux )
     demux_sys_t  *p_sys = p_demux->p_sys;
     block_t *p_block_in, *p_block_out;
 
-    if( ( p_block_in = stream_Block( p_demux->s, MPGV_PACKET_SIZE ) ) == NULL )
+    if( ( p_block_in = vlc_stream_Block( p_demux->s, MPGV_PACKET_SIZE ) ) == NULL )
     {
         return 0;
     }

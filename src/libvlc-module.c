@@ -124,10 +124,23 @@ static const char *const ppsz_snap_formats[] =
     "The default behavior is to automatically select the best method " \
     "available.")
 
+#define ROLE_TEXT N_("Media role")
+#define ROLE_LONGTEXT N_("Media (player) role for operating system policy.")
+
 #define AUDIO_TEXT N_("Enable audio")
 #define AUDIO_LONGTEXT N_( \
     "You can completely disable the audio output. The audio " \
     "decoding stage will not take place, thus saving some processing power.")
+static const char *ppsz_roles[] = {
+     "video", "music", "communication", "game",
+     "notification", "animation", "production",
+     "accessibility", "test",
+};
+static const char *ppsz_roles_text[] = {
+    N_("Video"), N_("Music"), N_("Communication"), N_("Game"),
+    N_("Notification"),  N_("Animation"), N_("Production"),
+    N_("Accessibility"), N_("Test"),
+};
 
 #define GAIN_TEXT N_("Audio gain")
 #define GAIN_LONGTEXT N_( \
@@ -153,14 +166,12 @@ static const char *const ppsz_snap_formats[] =
     "This selects which plugin to use for audio resampling." )
 
 #define MULTICHA_LONGTEXT N_( \
-    "This sets the audio output channels mode that will " \
-    "be used by default when possible (ie. if your hardware supports it as " \
-    "well as the audio stream being played).")
+    "Sets the audio output channels mode that will be used by default " \
+    "if your hardware and the audio stream are compatible.")
 
-#define SPDIF_TEXT N_("Use S/PDIF when available")
+#define SPDIF_TEXT N_("Force S/PDIF support")
 #define SPDIF_LONGTEXT N_( \
-    "S/PDIF can be used by default when " \
-    "your hardware supports it as well as the audio stream being played.")
+    "This option should be used when the audio output can't negotiate S/PDIF support.")
 
 #define FORCE_DOLBY_TEXT N_("Force detection of Dolby Surround")
 #define FORCE_DOLBY_LONGTEXT N_( \
@@ -296,11 +307,6 @@ static const char *const ppsz_align_descriptions[] =
 #define FULLSCREEN_TEXT N_("Fullscreen video output")
 #define FULLSCREEN_LONGTEXT N_( \
     "Start video in fullscreen mode" )
-
-#define OVERLAY_TEXT N_("Overlay video output")
-#define OVERLAY_LONGTEXT N_( \
-    "Overlay is the hardware acceleration capability of your video card " \
-    "(ability to render video directly). VLC will try to use it by default." )
 
 #define VIDEO_ON_TOP_TEXT N_("Always on top")
 #define VIDEO_ON_TOP_LONGTEXT N_( \
@@ -658,9 +664,9 @@ static const char *const ppsz_prefres[] = {
     "the form \"{name=bookmark-name,time=optional-time-offset," \
     "bytes=optional-byte-offset},{...}\"")
 
-#define INPUT_RECORD_PATH_TEXT N_("Record directory or filename")
+#define INPUT_RECORD_PATH_TEXT N_("Record directory")
 #define INPUT_RECORD_PATH_LONGTEXT N_( \
-    "Directory or filename where the records will be stored" )
+    "Directory where the records will be stored" )
 
 #define INPUT_RECORD_NATIVE_TEXT N_("Prefer native stream recording")
 #define INPUT_RECORD_NATIVE_LONGTEXT N_( \
@@ -694,6 +700,9 @@ static const char *const ppsz_prefres[] = {
 #define SUB_MARGIN_LONGTEXT N_( \
     "You can use this option to place the subtitles under the movie, " \
     "instead of over the movie. Try several positions.")
+
+#define SUB_TEXT_SCALE_TEXT N_("Subtitles text scaling factor")
+#define SUB_TEXT_SCALE_LONGTEXT N_("Set value to alter subtitles size where possible")
 
 #define SPU_TEXT N_("Enable sub-pictures")
 #define SPU_LONGTEXT N_( \
@@ -759,7 +768,7 @@ static const char *const ppsz_prefres[] = {
     "This is the default Audio CD drive (or file) to use. Don't forget the " \
     "colon after the drive letter (e.g. D:)")
 # define DVD_DEVICE     NULL
-# define CD_DEVICE      "D:"
+# define VCD_DEVICE     "D:"
 
 #else
 # define DVD_DEV_LONGTEXT N_( \
@@ -771,18 +780,15 @@ static const char *const ppsz_prefres[] = {
 
 # if defined(__OpenBSD__)
 #  define DVD_DEVICE     "/dev/cd0c"
-#  define CD_DEVICE      "/dev/cd0c"
+#  define VCD_DEVICE     "/dev/cd0c"
 # elif defined(__linux__)
 #  define DVD_DEVICE     "/dev/sr0"
-#  define CD_DEVICE      "/dev/sr0"
+#  define VCD_DEVICE     "/dev/sr0"
 # else
 #  define DVD_DEVICE     "/dev/dvd"
-#  define CD_DEVICE      "/dev/cdrom"
+#  define VCD_DEVICE     "/dev/cdrom"
 # endif
 #endif
-
-#define VCD_DEVICE       CD_DEVICE
-#define CDAUDIO_DEVICE   CD_DEVICE
 
 #define TIMEOUT_TEXT N_("TCP connection timeout")
 #define TIMEOUT_LONGTEXT N_( \
@@ -986,6 +992,10 @@ static const char *const ppsz_prefres[] = {
 #define STREAM_FILTER_LONGTEXT N_( \
     "Stream filters are used to modify the stream that is being read. " )
 
+#define DEMUX_FILTER_TEXT N_("Demux filter module")
+#define DEMUX_FILTER_LONGTEXT N_( \
+    "Demux filters are used to modify/control the stream that is being read. " )
+
 #define DEMUX_TEXT N_("Demux module")
 #define DEMUX_LONGTEXT N_( \
     "Demultiplexers are used to separate the \"elementary\" streams " \
@@ -996,7 +1006,7 @@ static const char *const ppsz_prefres[] = {
 #define VOD_SERVER_TEXT N_("VoD server module")
 #define VOD_SERVER_LONGTEXT N_( \
     "You can select which VoD server module you want to use. Set this " \
-    "to `vod_rtsp' to switch back to the old, legacy module." )
+    "to 'vod_rtsp' to switch back to the old, legacy module." )
 
 #define RT_PRIORITY_TEXT N_("Allow real-time priority")
 #define RT_PRIORITY_LONGTEXT N_( \
@@ -1023,6 +1033,16 @@ static const char *const ppsz_prefres[] = {
 #define PLUGINS_CACHE_TEXT N_("Use a plugins cache")
 #define PLUGINS_CACHE_LONGTEXT N_( \
     "Use a plugins cache which will greatly improve the startup time of VLC.")
+
+#define PLUGINS_SCAN_TEXT N_("Scan for new plugins")
+#define PLUGINS_SCAN_LONGTEXT N_( \
+    "Scan plugin directories for new plugins at startup. " \
+    "This increases the startup time of VLC.")
+
+#define KEYSTORE_TEXT N_("Preferred keystore list")
+#define KEYSTORE_LONGTEXT N_( \
+    "List of keystores that VLC will use in " \
+    "priority. Only advanced users should alter this option." )
 
 #define STATS_TEXT N_("Locally collect statistics")
 #define STATS_LONGTEXT N_( \
@@ -1090,6 +1110,10 @@ static const char *const ppsz_prefres[] = {
 #define PREPARSE_LONGTEXT N_( \
     "Automatically preparse files added to the playlist " \
     "(to retrieve some metadata)." )
+
+#define PREPARSE_TIMEOUT_TEXT N_( "Preparsing timeout" )
+#define PREPARSE_TIMEOUT_LONGTEXT N_( \
+    "Maximum time allowed to preparse a file" )
 
 #define METADATA_NETWORK_TEXT N_( "Allow metadata network access" )
 
@@ -1238,13 +1262,13 @@ static const char *const mouse_wheel_texts[] = {
 #define QUIT_KEY_TEXT N_("Quit")
 #define QUIT_KEY_LONGTEXT N_("Select the hotkey to quit the application.")
 #define NAV_UP_KEY_TEXT N_("Navigate up")
-#define NAV_UP_KEY_LONGTEXT N_("Select the key to move the selector up in DVD menus.")
+#define NAV_UP_KEY_LONGTEXT N_("Select the key to move the selector up in DVD menus / Move viewpoint to up (pitch).")
 #define NAV_DOWN_KEY_TEXT N_("Navigate down")
-#define NAV_DOWN_KEY_LONGTEXT N_("Select the key to move the selector down in DVD menus.")
+#define NAV_DOWN_KEY_LONGTEXT N_("Select the key to move the selector down in DVD menus / Move viewpoint to down (pitch).")
 #define NAV_LEFT_KEY_TEXT N_("Navigate left")
-#define NAV_LEFT_KEY_LONGTEXT N_("Select the key to move the selector left in DVD menus.")
+#define NAV_LEFT_KEY_LONGTEXT N_("Select the key to move the selector left in DVD menus / Move viewpoint to left (yaw).")
 #define NAV_RIGHT_KEY_TEXT N_("Navigate right")
-#define NAV_RIGHT_KEY_LONGTEXT N_("Select the key to move the selector right in DVD menus.")
+#define NAV_RIGHT_KEY_LONGTEXT N_("Select the key to move the selector right in DVD menus / Move viewpoint to right (yaw).")
 #define NAV_ACTIVATE_KEY_TEXT N_("Activate")
 #define NAV_ACTIVATE_KEY_LONGTEXT N_("Select the key to activate selected item in DVD menus.")
 #define DISC_MENU_TEXT N_("Go to the DVD menu")
@@ -1267,6 +1291,10 @@ static const char *const mouse_wheel_texts[] = {
 #define SUBDELAY_UP_KEY_LONGTEXT N_("Select the key to increase the subtitle delay.")
 #define SUBDELAY_DOWN_KEY_TEXT N_("Subtitle delay down")
 #define SUBDELAY_DOWN_KEY_LONGTEXT N_("Select the key to decrease the subtitle delay.")
+#define SUBTEXT_SCALE_KEY_TEXT     N_("Reset subtitles text scale")
+#define SUBTEXT_SCALEDOWN_KEY_TEXT N_("Scale up subtitles text")
+#define SUBTEXT_SCALEUP_KEY_TEXT   N_("Scale down subtitles text")
+#define SUBTEXT_SCALE_KEY_LONGTEXT N_("Select the key to change subtitles text scaling")
 #define SUBSYNC_MARKAUDIO_KEY_TEXT N_("Subtitle sync / bookmark audio timestamp")
 #define SUBSYNC_MARKAUDIO_KEY_LONGTEXT N_("Select the key to bookmark audio timestamp when syncing subtitles.")
 #define SUBSYNC_MARKSUB_KEY_TEXT N_("Subtitle sync / bookmark subtitle timestamp")
@@ -1394,6 +1422,12 @@ static const char *const mouse_wheel_texts[] = {
 #define UNCROP_RIGHT_KEY_TEXT N_("Uncrop one pixel from the right of the video")
 #define UNCROP_RIGHT_KEY_LONGTEXT N_("Uncrop one pixel from the right of the video")
 
+/* 360° Viewpoint */
+#define VIEWPOINT_FOV_IN_KEY_TEXT N_("Shrink the viewpoint field of view (360°)")
+#define VIEWPOINT_FOV_OUT_KEY_TEXT N_("Expand the viewpoint field of view (360°)")
+#define VIEWPOINT_ROLL_CLOCK_KEY_TEXT N_("Roll the viewpoint clockwise (360°)")
+#define VIEWPOINT_ROLL_ANTICLOCK_KEY_TEXT N_("Roll the viewpoint anti-clockwise (360°)")
+
 #define WALLPAPER_KEY_TEXT N_("Toggle wallpaper mode in video output")
 #define WALLPAPER_KEY_LONGTEXT N_( \
     "Toggle wallpaper mode in video output." )
@@ -1435,7 +1469,7 @@ vlc_module_begin ()
     add_bool( "volume-save", true, VOLUME_SAVE_TEXT, VOLUME_SAVE_TEXT, true )
     add_obsolete_integer( "aout-rate" ) /* since 2.0.0 */
     add_obsolete_bool( "hq-resampling" ) /* since 1.1.8 */
-    add_bool( "spdif", 0, SPDIF_TEXT, SPDIF_LONGTEXT, false )
+    add_bool( "spdif", false, SPDIF_TEXT, SPDIF_LONGTEXT, true )
     add_integer( "force-dolby-surround", 0, FORCE_DOLBY_TEXT,
                  FORCE_DOLBY_LONGTEXT, false )
         change_integer_list( pi_force_dolby_values, ppsz_force_dolby_descriptions )
@@ -1444,9 +1478,6 @@ vlc_module_begin ()
     add_integer( "audio-desync", 0, DESYNC_TEXT,
                  DESYNC_LONGTEXT, true )
         change_safe ()
-
-    add_module( "audio-resampler", "audio resampler", NULL,
-                AUDIO_RESAMPLER_TEXT, AUDIO_RESAMPLER_LONGTEXT, true )
 
     /* FIXME TODO create a subcat replay gain ? */
     add_string( "audio-replay-gain-mode", ppsz_replay_gain_mode[0], AUDIO_REPLAY_GAIN_MODE_TEXT,
@@ -1466,12 +1497,20 @@ vlc_module_begin ()
     add_module( "aout", "audio output", NULL, AOUT_TEXT, AOUT_LONGTEXT,
                 true )
         change_short('A')
+    add_string( "role", "video", ROLE_TEXT, ROLE_LONGTEXT, true )
+        change_string_list( ppsz_roles, ppsz_roles_text )
+
     set_subcategory( SUBCAT_AUDIO_AFILTER )
     add_module_list( "audio-filter", "audio filter", NULL,
                      AUDIO_FILTER_TEXT, AUDIO_FILTER_LONGTEXT, false )
     set_subcategory( SUBCAT_AUDIO_VISUAL )
     add_module( "audio-visual", "visualization", "none", AUDIO_VISUAL_TEXT,
                 AUDIO_VISUAL_LONGTEXT, false )
+
+    set_subcategory( SUBCAT_AUDIO_RESAMPLER )
+    add_module( "audio-resampler", "audio resampler", NULL,
+                AUDIO_RESAMPLER_TEXT, AUDIO_RESAMPLER_LONGTEXT, true )
+
 
 /* Video options */
     set_category( CAT_VIDEO )
@@ -1502,10 +1541,7 @@ vlc_module_begin ()
               MOUSE_EVENTS_LONGTEXT, true )
     add_obsolete_integer( "vout-event" ) /* deprecated since 1.1.0 */
     add_obsolete_integer( "x11-event" ) /* renamed since 1.0.0 */
-#ifndef __APPLE__
-    add_bool( "overlay", 1, OVERLAY_TEXT, OVERLAY_LONGTEXT, false )
-        change_safe()
-#endif
+    add_obsolete_bool( "overlay" ) /* renamed since 3.0.0 */
     add_bool( "video-on-top", 0, VIDEO_ON_TOP_TEXT,
               VIDEO_ON_TOP_LONGTEXT, false )
     add_bool( "video-wallpaper", false, WALLPAPER_TEXT,
@@ -1589,8 +1625,10 @@ vlc_module_begin ()
         change_short('V')
 
     set_subcategory( SUBCAT_VIDEO_VFILTER )
-    add_module_list_cat( "video-filter", SUBCAT_VIDEO_VFILTER, NULL,
-                VIDEO_FILTER_TEXT, VIDEO_FILTER_LONGTEXT, false )
+    add_module_list( "video-filter", "video filter", NULL,
+                     VIDEO_FILTER_TEXT, VIDEO_FILTER_LONGTEXT, false )
+
+    set_subcategory( SUBCAT_VIDEO_SPLITTER )
     add_module_list( "video-splitter", "video splitter", NULL,
                      VIDEO_SPLITTER_TEXT, VIDEO_SPLITTER_LONGTEXT, false )
     add_obsolete_string( "vout-filter" ) /* since 2.0.0 */
@@ -1626,6 +1664,9 @@ vlc_module_begin ()
                  SUB_PATH_TEXT, SUB_PATH_LONGTEXT, true )
     add_integer( "sub-margin", 0, SUB_MARGIN_TEXT,
                  SUB_MARGIN_LONGTEXT, true )
+    add_integer_with_range( "sub-text-scale", 100, 10, 500,
+               SUB_TEXT_SCALE_TEXT, SUB_TEXT_SCALE_LONGTEXT, false )
+        change_volatile  ()
     set_section( N_( "Overlays" ) , NULL )
     add_module_list( "sub-source", "sub source", NULL,
                      SUB_SOURCE_TEXT, SUB_SOURCE_LONGTEXT, false )
@@ -1707,8 +1748,6 @@ vlc_module_begin ()
                   false )
     add_loadfile( "vcd", VCD_DEVICE, VCD_DEV_TEXT, VCD_DEV_LONGTEXT,
                   false )
-    add_loadfile( "cd-audio", CDAUDIO_DEVICE, CDAUDIO_DEV_TEXT,
-                  CDAUDIO_DEV_LONGTEXT, false )
 
     set_section( N_( "Network settings" ), NULL )
 
@@ -1786,7 +1825,6 @@ vlc_module_begin ()
     add_obsolete_integer( "dv-caching" ) /* 2.0.0 */
     add_obsolete_integer( "dvb-caching" ) /* 2.0.0 */
     add_obsolete_integer( "eyetv-caching" ) /* 2.0.0 */
-    add_obsolete_integer( "gnomevfs-caching" ) /* 2.0.0 */
     add_obsolete_integer( "jack-input-caching" ) /* 2.0.0 */
     add_obsolete_integer( "linsys-hdsdi-caching" ) /* 2.0.0 */
     add_obsolete_integer( "linsys-sdi-caching" ) /* 2.0.0 */
@@ -1864,6 +1902,7 @@ vlc_module_begin ()
     add_module_list( "stream-filter", "stream_filter", NULL,
                      STREAM_FILTER_TEXT, STREAM_FILTER_LONGTEXT, false )
 
+    add_string( "demux-filter", NULL, DEMUX_FILTER_TEXT, DEMUX_FILTER_LONGTEXT, true )
 
 /* Stream output options */
     set_category( CAT_SOUT )
@@ -1938,18 +1977,22 @@ vlc_module_begin ()
                 VOD_SERVER_LONGTEXT, true )
 
     set_section( N_("Plugins" ), NULL )
+#ifdef HAVE_DYNAMIC_PLUGINS
     add_bool( "plugins-cache", true, PLUGINS_CACHE_TEXT,
               PLUGINS_CACHE_LONGTEXT, true )
+    add_bool( "plugins-scan", true, PLUGINS_SCAN_TEXT,
+              PLUGINS_SCAN_LONGTEXT, true )
     add_obsolete_string( "plugin-path" ) /* since 2.0.0 */
+#endif
     add_obsolete_string( "data-path" ) /* since 2.1.0 */
+    add_string( "keystore", NULL, KEYSTORE_TEXT,
+                KEYSTORE_LONGTEXT, true )
 
     set_section( N_("Performance options"), NULL )
 
-#ifdef LIBVLC_USE_PTHREAD
-# ifndef __APPLE__
+#if defined (LIBVLC_USE_PTHREAD) && !defined (__APPLE__)
     add_bool( "rt-priority", false, RT_PRIORITY_TEXT,
               RT_PRIORITY_LONGTEXT, true )
-# endif
     add_integer( "rt-offset", 0, RT_OFFSET_TEXT,
                  RT_OFFSET_LONGTEXT, true )
 #endif
@@ -2011,6 +2054,9 @@ vlc_module_begin ()
 
     add_bool( "auto-preparse", true, PREPARSE_TEXT,
               PREPARSE_LONGTEXT, false )
+
+    add_integer( "preparse-timeout", 5000, PREPARSE_TIMEOUT_TEXT,
+                 PREPARSE_TIMEOUT_LONGTEXT, false )
 
     add_obsolete_integer( "album-art" )
     add_bool( "metadata-network-access", false, METADATA_NETWORK_TEXT,
@@ -2142,6 +2188,9 @@ vlc_module_begin ()
 #   define KEY_SUBDELAY_DOWN      "h"
 #   define KEY_SUBPOS_DOWN        NULL
 #   define KEY_SUBPOS_UP          NULL
+#   define KEY_SUBTEXT_SCALEUP    "Command+Mouse Wheel Up"
+#   define KEY_SUBTEXT_SCALEDOWN  "Command+Mouse Wheel Down"
+#   define KEY_SUBTEXT_SCALE      "Command+0"
 #   define KEY_SUBSYNC_MARKAUDIO  "Shift+h"
 #   define KEY_SUBSYNC_MARKSUB    "Shift+j"
 #   define KEY_SUBSYNC_APPLY      "Shift+k"
@@ -2182,6 +2231,10 @@ vlc_module_begin ()
 #   define KEY_UNCROP_BOTTOM      "Alt+Shift+k"
 #   define KEY_CROP_RIGHT         "Alt+l"
 #   define KEY_UNCROP_RIGHT       "Alt+Shift+l"
+
+/* 360° Viewpoint */
+#   define KEY_VIEWPOINT_FOV_IN   "Page Up"
+#   define KEY_VIEWPOINT_FOV_OUT  "Page Down"
 
 /* the macosx-interface already has bindings */
 #   define KEY_ZOOM_QUARTER       NULL
@@ -2274,6 +2327,9 @@ vlc_module_begin ()
 #   define KEY_SUBDELAY_DOWN      "g"
 #   define KEY_SUBPOS_DOWN        NULL
 #   define KEY_SUBPOS_UP          NULL
+#   define KEY_SUBTEXT_SCALEUP    "Ctrl+Mouse Wheel Up"
+#   define KEY_SUBTEXT_SCALEDOWN  "Ctrl+Mouse Wheel Down"
+#   define KEY_SUBTEXT_SCALE      "Ctrl+0"
 #   define KEY_SUBSYNC_MARKAUDIO  "Shift+h"
 #   define KEY_SUBSYNC_MARKSUB    "Shift+j"
 #   define KEY_SUBSYNC_APPLY      "Shift+k"
@@ -2322,6 +2378,10 @@ vlc_module_begin ()
 #   define KEY_UNCROP_BOTTOM      "Alt+Shift+c"
 #   define KEY_CROP_RIGHT         "Alt+f"
 #   define KEY_UNCROP_RIGHT       "Alt+Shift+f"
+
+/* 360° Viewpoint */
+#   define KEY_VIEWPOINT_FOV_IN   "Page Up"
+#   define KEY_VIEWPOINT_FOV_OUT  "Page Down"
 
 /* Zooming */
 #   define KEY_ZOOM_QUARTER       "Alt+1"
@@ -2516,6 +2576,15 @@ vlc_module_begin ()
     add_key( "key-loop", KEY_LOOP,
              LOOP_KEY_TEXT, LOOP_KEY_LONGTEXT, false )
 
+    add_key( "key-viewpoint-fov-in", KEY_VIEWPOINT_FOV_IN,
+             VIEWPOINT_FOV_IN_KEY_TEXT, VIEWPOINT_FOV_IN_KEY_TEXT, true )
+    add_key( "key-viewpoint-fov-out", KEY_VIEWPOINT_FOV_OUT,
+             VIEWPOINT_FOV_OUT_KEY_TEXT, VIEWPOINT_FOV_OUT_KEY_TEXT, true )
+    add_key( "key-viewpoint-roll-clock", NULL,
+             VIEWPOINT_ROLL_CLOCK_KEY_TEXT, VIEWPOINT_ROLL_CLOCK_KEY_TEXT, true )
+    add_key( "key-viewpoint-roll-anticlock", NULL,
+             VIEWPOINT_ROLL_ANTICLOCK_KEY_TEXT, VIEWPOINT_ROLL_ANTICLOCK_KEY_TEXT, true )
+
     set_section ( N_("Zoom" ), NULL )
     add_key( "key-zoom-quarter",  KEY_ZOOM_QUARTER,
         ZOOM_QUARTER_KEY_TEXT,  NULL, false )
@@ -2582,6 +2651,12 @@ vlc_module_begin ()
     add_key( "key-clear-playlist", KEY_PLAY_CLEAR,
              PLAY_CLEAR_KEY_TEXT, PLAY_CLEAR_KEY_LONGTEXT, true )
 
+    add_key( "key-subtitle-text-scale-normal", KEY_SUBTEXT_SCALE,
+             SUBTEXT_SCALE_KEY_TEXT, SUBTEXT_SCALE_KEY_LONGTEXT, true )
+    add_key( "key-subtitle-text-scale-up", KEY_SUBTEXT_SCALEUP,
+             SUBTEXT_SCALEUP_KEY_TEXT, SUBTEXT_SCALE_KEY_LONGTEXT, true )
+    add_key( "key-subtitle-text-scale-down", KEY_SUBTEXT_SCALEDOWN,
+             SUBTEXT_SCALEDOWN_KEY_TEXT, SUBTEXT_SCALE_KEY_LONGTEXT, true )
 
     add_string( "bookmark1", NULL,
              BOOKMARK1_TEXT, BOOKMARK_LONGTEXT, false )
@@ -2658,9 +2733,11 @@ vlc_module_begin ()
     add_obsolete_bool( "save-config" )
     add_bool( "reset-config", false, RESET_CONFIG_TEXT, "", false )
         change_volatile ()
+#ifdef HAVE_DYNAMIC_PLUGINS
     add_bool( "reset-plugins-cache", false,
               RESET_PLUGINS_CACHE_TEXT, "", false )
         change_volatile ()
+#endif
     add_bool( "version", false, VERSION_TEXT, "", false )
         change_volatile ()
     add_string( "config", NULL, CONFIG_TEXT, "", false )

@@ -198,14 +198,14 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
 
     png_structp p_png;
     png_infop p_info, p_end_info;
-    png_bytep *p_row_pointers = NULL;
+    png_bytep *volatile p_row_pointers = NULL;
 
     if( !pp_block || !*pp_block ) return NULL;
 
     p_block = *pp_block;
     p_sys->b_error = false;
 
-    if( p_block->i_flags & BLOCK_FLAG_DISCONTINUITY )
+    if( p_block->i_flags & BLOCK_FLAG_CORRUPTED )
     {
         block_Release( p_block ); *pp_block = NULL;
         return NULL;
@@ -255,9 +255,6 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
     p_dec->fmt_out.video.i_visible_height = p_dec->fmt_out.video.i_height = i_height;
     p_dec->fmt_out.video.i_sar_num = 1;
     p_dec->fmt_out.video.i_sar_den = 1;
-    p_dec->fmt_out.video.i_rmask = 0x000000ff;
-    p_dec->fmt_out.video.i_gmask = 0x0000ff00;
-    p_dec->fmt_out.video.i_bmask = 0x00ff0000;
 
     if( i_color_type == PNG_COLOR_TYPE_PALETTE )
         png_set_palette_to_rgb( p_png );
@@ -279,6 +276,8 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
     }
 
     /* Get a new picture */
+    if( decoder_UpdateVideoFormat( p_dec ) )
+        goto error;
     p_pic = decoder_NewPicture( p_dec );
     if( !p_pic ) goto error;
 
@@ -339,9 +338,6 @@ static int OpenEncoder(vlc_object_t *p_this)
         p_enc->fmt_in.video.i_visible_height;
 
     p_enc->fmt_in.i_codec = VLC_CODEC_RGB24;
-    p_enc->fmt_in.video.i_rmask = 0x000000ff;
-    p_enc->fmt_in.video.i_gmask = 0x0000ff00;
-    p_enc->fmt_in.video.i_bmask = 0x00ff0000;
     p_enc->pf_encode_video = EncodeBlock;
 
     return VLC_SUCCESS;
@@ -395,9 +391,6 @@ static block_t *EncodeBlock(encoder_t *p_enc, picture_t *p_pic)
     if( p_info == NULL )
         goto error;
 
-    png_infop p_end_info = png_create_info_struct( p_png );
-    if( p_end_info == NULL ) goto error;
-
     png_set_IHDR( p_png, p_info,
             p_enc->fmt_in.video.i_visible_width,
             p_enc->fmt_in.video.i_visible_height,
@@ -416,7 +409,7 @@ static block_t *EncodeBlock(encoder_t *p_enc, picture_t *p_pic)
         if( p_sys->b_error ) goto error;
     }
 
-    png_write_end( p_png, p_end_info );
+    png_write_end( p_png, p_info );
     if( p_sys->b_error ) goto error;
 
     png_destroy_write_struct( &p_png, &p_info );

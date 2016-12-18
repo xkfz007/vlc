@@ -5,12 +5,12 @@
 #USE_FFMPEG ?= 1
 
 ifdef USE_FFMPEG
-HASH=HEAD
-FFMPEG_SNAPURL := http://git.videolan.org/?p=ffmpeg.git;a=snapshot;h=$(HASH);sf=tgz
-FFMPEG_GITURL := git://git.videolan.org/ffmpeg.git
+FFMPEG_HASH=HEAD
+FFMPEG_SNAPURL := http://git.videolan.org/?p=ffmpeg.git;a=snapshot;h=$(FFMPEG_HASH);sf=tgz
+FFMPEG_GITURL := http://git.videolan.org/git/ffmpeg.git
 else
-HASH=HEAD
-FFMPEG_SNAPURL := http://git.libav.org/?p=libav.git;a=snapshot;h=$(HASH);sf=tgz
+FFMPEG_HASH=HEAD
+FFMPEG_SNAPURL := http://git.libav.org/?p=libav.git;a=snapshot;h=$(FFMPEG_HASH);sf=tgz
 FFMPEG_GITURL := git://git.libav.org/libav.git
 endif
 
@@ -19,6 +19,7 @@ FFMPEGCONF = \
 	--pkg-config="$(PKG_CONFIG)" \
 	--disable-doc \
 	--disable-encoder=vorbis \
+	--disable-decoder=opus \
 	--enable-libgsm \
 	--enable-libopenjpeg \
 	--disable-debug \
@@ -26,6 +27,7 @@ FFMPEGCONF = \
 	--disable-devices \
 	--disable-avfilter \
 	--disable-filters \
+	--disable-protocol=concat \
 	--disable-bsfs \
 	--disable-bzlib \
 	--disable-avresample
@@ -34,6 +36,10 @@ ifdef USE_FFMPEG
 FFMPEGCONF += \
 	--disable-swresample \
 	--disable-iconv
+ifdef HAVE_DARWIN_OS
+FFMPEGCONF += \
+	--disable-videotoolbox
+endif
 endif
 
 DEPS_ffmpeg = zlib gsm openjpeg
@@ -93,6 +99,9 @@ endif
 ifeq ($(ARCH),mipsel)
 FFMPEGCONF += --arch=mips
 endif
+ifeq ($(ARCH),mips64el)
+FFMPEGCONF += --arch=mips64
+endif
 
 # x86 stuff
 ifeq ($(ARCH),i386)
@@ -134,18 +143,51 @@ FFMPEGCONF += --target-os=linux --enable-pic
 
 endif
 
+ifdef HAVE_ANDROID
+# broken text relocations
+ifeq ($(ANDROID_ABI), x86)
+FFMPEGCONF +=  --disable-mmx --disable-mmxext --disable-inline-asm
+endif
+ifeq ($(ANDROID_ABI), x86_64)
+FFMPEGCONF +=  --disable-mmx --disable-mmxext --disable-inline-asm
+endif
+ifdef HAVE_NEON
+ifeq ($(ANDROID_ABI), armeabi-v7a)
+FFMPEGCONF += --as='gas-preprocessor.pl -as-type clang -arch arm $(CC)'
+endif
+endif
+endif
+
 # Windows
 ifdef HAVE_WIN32
+ifndef HAVE_VISUALSTUDIO
+DEPS_ffmpeg += d3d11
 ifndef HAVE_MINGW_W64
 DEPS_ffmpeg += directx
 endif
-FFMPEGCONF += --target-os=mingw32 --enable-memalign-hack
-FFMPEGCONF += --enable-w32threads --enable-dxva2
+endif
+FFMPEGCONF += --target-os=mingw32
+FFMPEGCONF += --enable-w32threads
+ifndef HAVE_WINSTORE
+FFMPEGCONF += --enable-dxva2
+else
+FFMPEGCONF += --disable-dxva2
+endif
+
+ifdef USE_FFMPEG
+FFMPEGCONF += --enable-memalign-hack
+endif
 
 ifdef HAVE_WIN64
 FFMPEGCONF += --cpu=athlon64 --arch=x86_64
-else # !WIN64
+else
+ifeq ($(ARCH),i386) # 32bits intel
 FFMPEGCONF+= --cpu=i686 --arch=x86
+else
+ifdef HAVE_ARMV7A
+FFMPEGCONF+= --arch=arm
+endif
+endif
 endif
 
 else # !Windows
@@ -168,17 +210,17 @@ endif
 
 FFMPEGCONF += --nm="$(NM)" --ar="$(AR)"
 
-$(TARBALLS)/ffmpeg-$(HASH).tar.xz:
-	$(call download_git,$(FFMPEG_GITURL),,$(HASH))
+$(TARBALLS)/ffmpeg-$(FFMPEG_HASH).tar.xz:
+	$(call download_git,$(FFMPEG_GITURL),,$(FFMPEG_HASH))
 
-.sum-ffmpeg: $(TARBALLS)/ffmpeg-$(HASH).tar.xz
+.sum-ffmpeg: $(TARBALLS)/ffmpeg-$(FFMPEG_HASH).tar.xz
 	$(warning Not implemented.)
 	touch $@
 
-ffmpeg: ffmpeg-$(HASH).tar.xz .sum-ffmpeg
-	rm -Rf $@ $@-$(HASH)
-	mkdir -p $@-$(HASH)
-	$(XZCAT) "$<" | (cd $@-$(HASH) && tar xv --strip-components=1)
+ffmpeg: ffmpeg-$(FFMPEG_HASH).tar.xz .sum-ffmpeg
+	rm -Rf $@ $@-$(FFMPEG_HASH)
+	mkdir -p $@-$(FFMPEG_HASH)
+	$(XZCAT) "$<" | (cd $@-$(FFMPEG_HASH) && tar xv --strip-components=1)
 	$(MOVE)
 
 .ffmpeg: ffmpeg

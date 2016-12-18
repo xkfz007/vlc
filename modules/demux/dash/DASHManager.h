@@ -25,24 +25,38 @@
 #ifndef DASHMANAGER_H_
 #define DASHMANAGER_H_
 
-#include "../adaptative/PlaylistManager.h"
-#include "../adaptative/logic/AbstractAdaptationLogic.h"
+#include "../adaptive/PlaylistManager.h"
+#include "../adaptive/logic/AbstractAdaptationLogic.h"
 #include "mpd/MPD.h"
+
+namespace adaptive
+{
+    namespace xml
+    {
+        class Node;
+    }
+}
 
 namespace dash
 {
-    using namespace adaptative;
+    using namespace adaptive;
 
     class DASHManager : public PlaylistManager
     {
         public:
-            DASHManager( mpd::MPD *mpd,
-                         logic::AbstractAdaptationLogic::LogicType type,
-                         stream_t *stream);
+            DASHManager( demux_t *, mpd::MPD *mpd,
+                         AbstractStreamFactory *,
+                         logic::AbstractAdaptationLogic::LogicType type);
             virtual ~DASHManager    ();
 
-            virtual bool updatePlaylist(); //reimpl
-            virtual AbstractAdaptationLogic *createLogic(AbstractAdaptationLogic::LogicType); //reimpl
+            virtual bool needsUpdate() const; /* reimpl */
+            virtual bool updatePlaylist(); /* reimpl */
+            virtual void scheduleNextUpdate();/* reimpl */
+            static bool isDASH(xml::Node *);
+            static bool mimeMatched(const std::string &);
+
+        protected:
+            virtual int doControl(int, va_list); /* reimpl */
     };
 
 }

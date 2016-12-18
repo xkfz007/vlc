@@ -229,7 +229,7 @@ static bool PlayItem( playlist_t *p_playlist, playlist_item_t *p_item )
     if( !b_has_art || strncmp( psz_arturl, "attachment://", 13 ) )
     {
         PL_DEBUG( "requesting art for new input thread" );
-        libvlc_ArtRequest( p_playlist->p_libvlc, p_input, META_REQUEST_OPTION_NONE );
+        libvlc_ArtRequest( p_playlist->obj.libvlc, p_input, META_REQUEST_OPTION_NONE );
     }
     free( psz_arturl );
 
@@ -394,7 +394,7 @@ static playlist_item_t *NextItem( playlist_t *p_playlist )
 
         PL_DEBUG( "changing item without a request (current %i/%i)",
                   p_playlist->i_current_index, p_playlist->current.i_size );
-        /* Cant go to next from current item */
+        /* Can't go to next from current item */
         if( get_current_status_item( p_playlist ) &&
             get_current_status_item( p_playlist )->i_flags & PLAYLIST_SKIP_FLAG )
             return NULL;
@@ -442,10 +442,11 @@ static void LoopInput( playlist_t *p_playlist )
         input_Stop( p_input );
     }
 
-#warning Unsynchronized access to *p_input flags...
-    /* This input is dead. Remove it ! */
-    if( p_input->b_dead )
+    switch( var_GetInteger( p_input, "state" ) )
     {
+    case END_S:
+    case ERROR_S:
+    /* This input is dead. Remove it ! */
         p_sys->p_input = NULL;
         PL_DEBUG( "dead input" );
         PL_UNLOCK;
@@ -460,16 +461,10 @@ static void LoopInput( playlist_t *p_playlist )
 
         input_Close( p_input );
         PL_LOCK;
-        return;
+        break;
+    default:
+        vlc_cond_wait( &p_sys->signal, &p_sys->lock );
     }
-    /* This input has finished, ask it to die ! */
-    else if( p_input->b_error || p_input->b_eof )
-    {
-        PL_DEBUG( "finished input" );
-        input_Stop( p_input );
-    }
-
-    vlc_cond_wait( &p_sys->signal, &p_sys->lock );
 }
 
 static bool Next( playlist_t *p_playlist )
@@ -516,7 +511,7 @@ static void *Thread ( void *data )
         if( var_InheritBool( p_playlist, "play-and-exit" ) )
         {
             msg_Info( p_playlist, "end of playlist, exiting" );
-            libvlc_Quit( p_playlist->p_libvlc );
+            libvlc_Quit( p_playlist->obj.libvlc );
         }
 
         /* Destroy any video display now (XXX: ugly hack) */

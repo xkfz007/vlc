@@ -30,7 +30,6 @@
 #include <string.h>
 
 #include <sys/types.h>
-#include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -41,6 +40,7 @@
 #include <vlc_plugin.h>
 #include <vlc_vout_display.h>
 #include <vlc_picture_pool.h>
+#include <vlc_fs.h>
 
 #define MAX_PICTURES 4
 
@@ -107,14 +107,12 @@ static picture_pool_t *Pool(vout_display_t *vd, unsigned req)
     if (req > MAX_PICTURES)
         req = MAX_PICTURES;
 
-    char bufpath[] = "/tmp/"PACKAGE_NAME"XXXXXX";
-    int fd = mkostemp(bufpath, O_CLOEXEC);
+    int fd = vlc_memfd();
     if (fd == -1)
     {
         msg_Err(vd, "cannot create buffers: %s", vlc_strerror_c(errno));
         return NULL;
     }
-    unlink(bufpath);
 
     /* We need one extra line to cover for horizontal crop offset */
     unsigned stride = 4 * ((vd->fmt.i_width + 31) & ~31);
@@ -126,7 +124,7 @@ static picture_pool_t *Pool(vout_display_t *vd, unsigned req)
     if (ftruncate(fd, length))
     {
         msg_Err(vd, "cannot allocate buffers: %s", vlc_strerror_c(errno));
-        close(fd);
+        vlc_close(fd);
         return NULL;
     }
 
@@ -134,7 +132,7 @@ static picture_pool_t *Pool(vout_display_t *vd, unsigned req)
     if (base == MAP_FAILED)
     {
         msg_Err(vd, "cannot map buffers: %s", vlc_strerror_c(errno));
-        close(fd);
+        vlc_close(fd);
         return NULL;
     }
 #ifndef NDEBUG
@@ -142,7 +140,7 @@ static picture_pool_t *Pool(vout_display_t *vd, unsigned req)
 #endif
 
     struct wl_shm_pool *shm_pool = wl_shm_create_pool(sys->shm, fd, length);
-    close(fd);
+    vlc_close(fd);
     if (shm_pool == NULL)
     {
         munmap(base, length);
@@ -470,7 +468,6 @@ static int Open(vlc_object_t *obj)
     vd->fmt.i_chroma = VLC_CODEC_RGB32;
 
     vd->info.has_pictures_invalid = sys->viewport == NULL;
-    vd->info.has_event_thread = true;
 
     vd->pool = Pool;
     vd->prepare = Prepare;

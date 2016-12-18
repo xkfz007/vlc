@@ -148,6 +148,7 @@ static int  OpenDecoder   ( vlc_object_t * );
 static int  OpenPacketizer( vlc_object_t * );
 static void CloseDecoder  ( vlc_object_t * );
 static block_t *DecodeBlock  ( decoder_t *, block_t ** );
+static void Flush( decoder_t * );
 
 static int  ProcessHeaders( decoder_t * );
 static void *ProcessPacket ( decoder_t *, ogg_packet *, block_t ** );
@@ -262,6 +263,7 @@ static int OpenDecoder( vlc_object_t *p_this )
     /* Set callbacks */
     p_dec->pf_decode_audio = DecodeBlock;
     p_dec->pf_packetize    = DecodeBlock;
+    p_dec->pf_flush        = Flush;
 
     return VLC_SUCCESS;
 }
@@ -412,9 +414,14 @@ static int ProcessHeaders( decoder_t *p_dec )
     }
     else
     {
+        void* p_extra = realloc( p_dec->fmt_out.p_extra,
+                                 p_dec->fmt_in.i_extra );
+        if( unlikely( p_extra == NULL ) )
+        {
+            return VLC_ENOMEM;
+        }
+        p_dec->fmt_out.p_extra = p_extra;
         p_dec->fmt_out.i_extra = p_dec->fmt_in.i_extra;
-        p_dec->fmt_out.p_extra = xrealloc( p_dec->fmt_out.p_extra,
-                                           p_dec->fmt_out.i_extra );
         memcpy( p_dec->fmt_out.p_extra,
                 p_dec->fmt_in.p_extra, p_dec->fmt_out.i_extra );
     }
@@ -426,6 +433,16 @@ static int ProcessHeaders( decoder_t *p_dec )
 }
 
 /*****************************************************************************
+ * Flush:
+ *****************************************************************************/
+static void Flush( decoder_t *p_dec )
+{
+    decoder_sys_t *p_sys = p_dec->p_sys;
+
+    date_Set( &p_sys->end_date, 0 );
+}
+
+/*****************************************************************************
  * ProcessPacket: processes a Vorbis packet.
  *****************************************************************************/
 static void *ProcessPacket( decoder_t *p_dec, ogg_packet *p_oggpacket,
@@ -434,8 +451,21 @@ static void *ProcessPacket( decoder_t *p_dec, ogg_packet *p_oggpacket,
     decoder_sys_t *p_sys = p_dec->p_sys;
     block_t *p_block = *pp_block;
 
+    *pp_block = NULL; /* To avoid being fed the same packet again */
+    if( !p_block )
+        return NULL;
+
+    if( p_block->i_flags & BLOCK_FLAG_DISCONTINUITY )
+        Flush( p_dec );
+
+    if( ( p_block->i_flags & BLOCK_FLAG_CORRUPTED ) != 0 )
+    {
+        block_Release(p_block);
+        return NULL;
+    }
+
     /* Date management */
-    if( p_block && p_block->i_pts > VLC_TS_INVALID &&
+    if( p_block->i_pts > VLC_TS_INVALID &&
         p_block->i_pts != date_Get( &p_sys->end_date ) )
     {
         date_Set( &p_sys->end_date, p_block->i_pts );
@@ -448,7 +478,6 @@ static void *ProcessPacket( decoder_t *p_dec, ogg_packet *p_oggpacket,
         return NULL;
     }
 
-    *pp_block = NULL; /* To avoid being fed the same packet again */
 
     if( p_sys->b_packetizer )
     {
@@ -507,6 +536,7 @@ static block_t *DecodePacket( decoder_t *p_dec, ogg_packet *p_oggpacket )
 
         block_t *p_aout_buffer;
 
+        if( decoder_UpdateAudioFormat( p_dec ) ) return NULL;
         p_aout_buffer =
             decoder_NewAudioBuffer( p_dec, i_samples );
 
@@ -648,14 +678,10 @@ static void ConfigureChannelOrder(uint8_t *pi_chan_table, int i_channels,
             pi_channels_in = pi_3channels_in;
             break;
         default:
-            {
-                int i;
-                for( i = 0; i< i_channels; ++i )
-                {
-                    pi_chan_table[i] = i;
-                }
-                return;
-            }
+            for( int i = 0; i< i_channels; ++i )
+                pi_chan_table[i] = i;
+
+            return;
     }
 
     if( b_decode )
@@ -725,7 +751,7 @@ static int OpenEncoder( vlc_object_t *p_this )
     ogg_packet header[3];
 
     if( p_enc->fmt_out.i_codec != VLC_CODEC_VORBIS &&
-        !p_enc->b_force )
+        !p_enc->obj.force )
     {
         return VLC_EGENERIC;
     }

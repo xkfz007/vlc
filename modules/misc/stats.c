@@ -48,7 +48,10 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
     if( !pp_block || !*pp_block ) return NULL;
     p_block = *pp_block;
 
-    p_pic = decoder_NewPicture( p_dec );
+    if( !decoder_UpdateVideoFormat( p_dec ) )
+        p_pic = decoder_NewPicture( p_dec );
+    if( !p_pic )
+        goto error;
 
     if( p_block->i_buffer == kBufferSize )
     {
@@ -68,6 +71,7 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
             p_block->i_pts : p_block->i_dts;
     p_pic->b_force = true;
 
+error:
     block_Release( p_block );
     *pp_block = NULL;
     return p_pic;
@@ -144,7 +148,7 @@ static int Demux( demux_t *p_demux )
 {
     demux_sys_t *p_sys = p_demux->p_sys;
 
-    block_t * p_block = stream_Block( p_demux->s, kBufferSize );
+    block_t * p_block = vlc_stream_Block( p_demux->s, kBufferSize );
 
     if( !p_block ) return 1;
 

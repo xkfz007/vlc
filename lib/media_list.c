@@ -160,7 +160,7 @@ libvlc_media_list_new( libvlc_instance_t * p_inst )
     }
 
     p_mlist->p_libvlc_instance = p_inst;
-    p_mlist->p_event_manager = libvlc_event_manager_new( p_mlist, p_inst );
+    p_mlist->p_event_manager = libvlc_event_manager_new( p_mlist );
     if( unlikely(p_mlist->p_event_manager == NULL) )
     {
         free(p_mlist);
@@ -168,17 +168,6 @@ libvlc_media_list_new( libvlc_instance_t * p_inst )
     }
 
     p_mlist->b_read_only = false;
-
-    libvlc_event_manager_register_event_type( p_mlist->p_event_manager,
-            libvlc_MediaListItemAdded );
-    libvlc_event_manager_register_event_type( p_mlist->p_event_manager,
-            libvlc_MediaListWillAddItem );
-    libvlc_event_manager_register_event_type( p_mlist->p_event_manager,
-            libvlc_MediaListItemDeleted );
-    libvlc_event_manager_register_event_type( p_mlist->p_event_manager,
-            libvlc_MediaListWillDeleteItem );
-    libvlc_event_manager_register_event_type( p_mlist->p_event_manager,
-            libvlc_MediaListEndReached );
 
     vlc_mutex_init( &p_mlist->object_lock );
     vlc_mutex_init( &p_mlist->refcount_lock ); // FIXME: spinlock?
@@ -189,6 +178,7 @@ libvlc_media_list_new( libvlc_instance_t * p_inst )
     p_mlist->p_md = NULL;
     p_mlist->p_internal_md = NULL;
 
+    libvlc_retain( p_inst );
     return p_mlist;
 }
 
@@ -199,9 +189,6 @@ libvlc_media_list_new( libvlc_instance_t * p_inst )
  **************************************************************************/
 void libvlc_media_list_release( libvlc_media_list_t * p_mlist )
 {
-    libvlc_media_t * p_md;
-    int i;
-
     vlc_mutex_lock( &p_mlist->refcount_lock );
     p_mlist->i_refcount--;
     if( p_mlist->i_refcount > 0 )
@@ -217,9 +204,9 @@ void libvlc_media_list_release( libvlc_media_list_t * p_mlist )
 
     libvlc_media_release( p_mlist->p_md );
 
-    for ( i = 0; i < vlc_array_count( &p_mlist->items ); i++ )
+    for ( int i = 0; i < vlc_array_count( &p_mlist->items ); i++ )
     {
-        p_md = vlc_array_item_at_index( &p_mlist->items, i );
+        libvlc_media_t* p_md = vlc_array_item_at_index( &p_mlist->items, i );
         libvlc_media_release( p_md );
     }
 
@@ -227,6 +214,7 @@ void libvlc_media_list_release( libvlc_media_list_t * p_mlist )
     vlc_mutex_destroy( &p_mlist->refcount_lock );
     vlc_array_clear( &p_mlist->items );
 
+    libvlc_release( p_mlist->p_libvlc_instance );
     free( p_mlist );
 }
 
@@ -253,8 +241,7 @@ libvlc_media_list_add_file_content( libvlc_media_list_t * p_mlist,
     input_item_t * p_input_item;
     libvlc_media_t * p_md;
 
-    p_input_item = input_item_NewExt( psz_uri,
-                                         _("Media Library"), 0, NULL, 0, -1 );
+    p_input_item = input_item_New( psz_uri, _("Media Library") );
 
     if( !p_input_item )
     {
@@ -453,16 +440,11 @@ libvlc_media_list_item_at_index( libvlc_media_list_t * p_mlist,
 int libvlc_media_list_index_of_item( libvlc_media_list_t * p_mlist,
                                      libvlc_media_t * p_searched_md )
 {
-    libvlc_media_t * p_md;
-    int i;
-    for ( i = 0; i < vlc_array_count( &p_mlist->items ); i++ )
-    {
-        p_md = vlc_array_item_at_index( &p_mlist->items, i );
-        if( p_searched_md == p_md )
-            return i;
-    }
-    libvlc_printerr( "Media not found" );
-    return -1;
+    int idx = vlc_array_index_of_item( &p_mlist->items, p_searched_md );
+    if( idx == -1 )
+        libvlc_printerr( "Media not found" );
+
+    return idx;
 }
 
 /**************************************************************************

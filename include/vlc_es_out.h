@@ -25,13 +25,12 @@
 #define VLC_ES_OUT_H 1
 
 /**
- * \file
- * This file defines functions and structures for handling es_out in stream output
- */
-
-/**
- * \defgroup es out Es Out
+ * \defgroup es_out ES output
+ * \ingroup input
+ * Elementary streams output
  * @{
+ * \file
+ * Elementary streams output interface
  */
 
 enum es_out_query_e
@@ -46,6 +45,9 @@ enum es_out_query_e
     /* force selection/unselection of the ES (bypass current mode) */
     ES_OUT_SET_ES_STATE,/* arg1= es_out_id_t* arg2=bool   */
     ES_OUT_GET_ES_STATE,/* arg1= es_out_id_t* arg2=bool*  */
+
+    /* sets es selection policy when in auto mode */
+    ES_OUT_SET_ES_CAT_POLICY, /* arg1=es_format_category_e arg2=es_out_policy_e */
 
     /* */
     ES_OUT_SET_GROUP,   /* arg1= int                            */
@@ -91,6 +93,12 @@ enum es_out_query_e
 
     /* First value usable for private control */
     ES_OUT_PRIVATE_START = 0x10000,
+};
+
+enum es_out_policy_e
+{
+    ES_OUT_ES_POLICY_EXCLUSIVE = 0,/* Enforces single ES selection only */
+    ES_OUT_ES_POLICY_SIMULTANEOUS, /* Allows multiple ES per cat */
 };
 
 struct es_out_t

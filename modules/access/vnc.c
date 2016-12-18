@@ -1,7 +1,7 @@
 /*****************************************************************************
  * vnc.c: libVNC access
  *****************************************************************************
- * Copyright (C) 2013 VideoLAN Authors
+ * Copyright (C) 2013 VideoLAN and VLC Authors
  *****************************************************************************
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -167,8 +167,7 @@ static rfbBool mallocFrameBufferHandler( rfbClient* p_client )
     if ( i_chroma != VLC_CODEC_RGB8 ) /* Palette based, no mask */
     {
         video_format_t videofmt;
-        memset( &videofmt, 0, sizeof(video_format_t) );
-        videofmt.i_chroma = i_chroma;
+        video_format_Init( &videofmt, i_chroma );
         video_format_FixRgb( &videofmt );
 
         p_client->format.redShift = videofmt.i_lrshift;
@@ -177,6 +176,7 @@ static rfbBool mallocFrameBufferHandler( rfbClient* p_client )
         p_client->format.redMax = videofmt.i_rmask >> videofmt.i_lrshift;
         p_client->format.greenMax = videofmt.i_gmask >> videofmt.i_lgshift;
         p_client->format.blueMax = videofmt.i_bmask >> videofmt.i_lbshift;
+        video_format_Clean( &videofmt );
     }
 
     /* Set up framebuffer */
@@ -442,7 +442,7 @@ static int Open( vlc_object_t *p_this )
 
     /* Parse uri params */
     vlc_url_t url;
-    vlc_UrlParse( &url, p_demux->psz_location, 0 );
+    vlc_UrlParse( &url, p_demux->psz_location );
 
     if ( !EMPTY_STR(url.psz_host) )
         p_sys->p_client->serverHost = strdup( url.psz_host );

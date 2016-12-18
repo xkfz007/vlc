@@ -28,8 +28,11 @@
 # define VLC_NETWORK_H
 
 /**
+ * \ingroup file
+ * \defgroup sockets Internet sockets
+ * @{
  * \file
- * This file defines interface to communicate with network plug-ins
+ * Definitions for sockets and low-level networking
  */
 
 #if defined( _WIN32 )
@@ -38,24 +41,6 @@
 #   include <winsock2.h>
 #   include <ws2tcpip.h>
 #   define net_errno (WSAGetLastError())
-
-struct iovec
-{
-    void  *iov_base;
-    size_t iov_len;
-};
-
-struct msghdr
-{
-    void         *msg_name;
-    size_t        msg_namelen;
-    struct iovec *msg_iov;
-    size_t        msg_iovlen;
-    void         *msg_control;
-    size_t        msg_controllen;
-    int           msg_flags;
-};
-
 #   ifndef IPV6_V6ONLY
 #       define IPV6_V6ONLY 27
 #   endif
@@ -68,21 +53,12 @@ struct msghdr
 #   define net_errno errno
 #endif
 
-#if defined( __SYMBIAN32__ )
-#   undef AF_INET6
-#   undef IN6_IS_ADDR_MULTICAST
-#   undef IPV6_V6ONLY
-#   undef IPV6_MULTICAST_HOPS
-#   undef IPV6_MULTICAST_IF
-#   undef IPV6_TCLASS
-#   undef IPV6_JOIN_GROUP
-#endif
-
 #ifndef MSG_NOSIGNAL
 # define MSG_NOSIGNAL 0
 #endif
 
 VLC_API int vlc_socket (int, int, int, bool nonblock) VLC_USED;
+VLC_API int vlc_socketpair (int, int, int, int [2], bool nonblock);
 
 struct sockaddr;
 VLC_API int vlc_accept( int, struct sockaddr *, socklen_t *, bool ) VLC_USED;
@@ -139,16 +115,8 @@ int net_Subscribe (vlc_object_t *obj, int fd, const struct sockaddr *addr,
 
 VLC_API int net_SetCSCov( int fd, int sendcov, int recvcov );
 
-/* Functions to read from or write to the networking layer */
-struct virtual_socket_t
-{
-    void *p_sys;
-    int (*pf_recv) ( void *, void *, size_t );
-    int (*pf_send) ( void *, const void *, size_t );
-};
-
-VLC_API ssize_t net_Read( vlc_object_t *p_this, int fd, void *p_data, size_t i_data, bool b_retry );
-#define net_Read(a,b,c,d,e) net_Read(VLC_OBJECT(a),b,c,d,e)
+VLC_API ssize_t net_Read( vlc_object_t *p_this, int fd, void *p_data, size_t i_data );
+#define net_Read(a,b,c,d) net_Read(VLC_OBJECT(a),b,c,d)
 VLC_API ssize_t net_Write( vlc_object_t *p_this, int fd, const void *p_data, size_t i_data );
 #define net_Write(a,b,c,d) net_Write(VLC_OBJECT(a),b,c,d)
 VLC_API char * net_Gets( vlc_object_t *p_this, int fd );
@@ -172,7 +140,9 @@ VLC_API ssize_t net_vaPrintf( vlc_object_t *p_this, int fd, const char *psz_fmt,
 #  define SHUT_WR    1
 #  define SHUT_RDWR  2
 # endif
-# define net_Close( fd ) (void)close (fd)
+
+VLC_API int vlc_close(int);
+# define net_Close( fd ) (void)vlc_close (fd)
 #endif
 
 /* Portable network names/addresses resolution layer */
@@ -230,8 +200,10 @@ VLC_API ssize_t net_vaPrintf( vlc_object_t *p_this, int fd, const char *psz_fmt,
 #endif
 
 #ifdef _WIN32
-# undef gai_strerror
-# define gai_strerror gai_strerrorA
+# if !defined(WINAPI_FAMILY) || WINAPI_FAMILY != WINAPI_FAMILY_APP
+#  undef gai_strerror
+#  define gai_strerror gai_strerrorA
+# endif
 #endif
 
 #ifdef __OS2__
@@ -259,7 +231,8 @@ VLC_API int  getnameinfo ( const struct sockaddr *, socklen_t,
 VLC_API int vlc_getnameinfo( const struct sockaddr *, int, char *, int, int *, int );
 VLC_API int vlc_getaddrinfo (const char *, unsigned,
                              const struct addrinfo *, struct addrinfo **);
-
+int vlc_getaddrinfo_i11e(const char *, unsigned, const struct addrinfo *,
+                         struct addrinfo **);
 
 #ifdef __OS2__
 /* OS/2 does not support IPv6, yet. But declare these only for compilation */
@@ -370,5 +343,7 @@ VLC_API char *vlc_getProxyUrl(const char *);
 # ifdef __cplusplus
 }
 # endif
+
+/** @} */
 
 #endif

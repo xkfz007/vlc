@@ -29,6 +29,7 @@
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_filter.h>
+#include <vlc_picture.h>
 #include "vlc_vdpau.h"
 
 /* Picture history as recommended by VDPAU documentation */
@@ -66,9 +67,22 @@ static VdpStatus MixerSetupColors(filter_t *filter, const VdpProcamp *procamp,
     filter_sys_t *sys = filter->p_sys;
     VdpStatus err;
     /* XXX: add some margin for padding... */
-    VdpColorStandard std = (filter->fmt_in.video.i_height > 576 + 16)
-                         ? VDP_COLOR_STANDARD_ITUR_BT_709
-                         : VDP_COLOR_STANDARD_ITUR_BT_601;
+    VdpColorStandard std;
+
+    switch (filter->fmt_in.video.space)
+    {
+        case COLOR_SPACE_BT601:
+            std = VDP_COLOR_STANDARD_ITUR_BT_601;
+            break;
+        case COLOR_SPACE_BT709:
+            std = VDP_COLOR_STANDARD_ITUR_BT_709;
+            break;
+        default:
+            if (filter->fmt_in.video.i_height >= 720)
+                std = VDP_COLOR_STANDARD_ITUR_BT_709;
+            else
+                std = VDP_COLOR_STANDARD_ITUR_BT_601;
+    }
 
     err = vdp_generate_csc_matrix(sys->vdp, procamp, std, csc);
     if (err != VDP_STATUS_OK)
@@ -418,12 +432,6 @@ drop:
     return NULL;
 }
 
-static inline VdpVideoSurface picture_GetVideoSurface(const picture_t *pic)
-{
-    vlc_vdp_video_field_t *field = pic->context;
-    return field->frame->surface;
-}
-
 static picture_t *Render(filter_t *filter, picture_t *src, bool import)
 {
     filter_sys_t *sys = filter->p_sys;
@@ -432,7 +440,7 @@ static picture_t *Render(filter_t *filter, picture_t *src, bool import)
 
     if (unlikely(src->context == NULL))
     {
-        msg_Err(filter, "corrupt VDPAU video surface %p", src);
+        msg_Err(filter, "corrupt VDPAU video surface %p", (void *)src);
         picture_Release(src);
         return NULL;
     }
@@ -645,7 +653,8 @@ static picture_t *Render(filter_t *filter, picture_t *src, bool import)
     err = vdp_video_mixer_render(sys->vdp, sys->mixer, VDP_INVALID_HANDLE,
                                  NULL, structure,
                                  MAX_PAST, past, surface, MAX_FUTURE, future,
-                                 &src_rect, output, &dst_rect, NULL, 0, NULL);
+                                 &src_rect, output, &dst_rect, &dst_rect, 0,
+                                 NULL);
     if (err != VDP_STATUS_OK)
     {
         msg_Err(filter, "video %s %s failure: %s", "mixer", "rendering",
@@ -770,7 +779,7 @@ static int OutputOpen(vlc_object_t *obj)
     sys->procamp.hue = 0.f;
 
     filter->pf_video_filter = video_filter;
-    filter->pf_video_flush = Flush;
+    filter->pf_flush = Flush;
     return VLC_SUCCESS;
 error:
     free(sys);
@@ -801,7 +810,7 @@ static const char *const algo_names[] = {
 vlc_module_begin()
     set_shortname(N_("VDPAU"))
     set_description(N_("VDPAU surface conversions"))
-    set_capability("video filter2", 10)
+    set_capability("video converter", 10)
     set_category(CAT_VIDEO)
     set_subcategory(SUBCAT_VIDEO_VFILTER)
     set_callbacks(OutputOpen, OutputClose)

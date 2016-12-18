@@ -7,18 +7,22 @@ ifeq ($(call need_pkg,"libarchive >= 3.1.0"),)
 PKGS_FOUND += libarchive
 endif
 
+DEPS_libarchive = zlib
+
 $(TARBALLS)/libarchive-$(LIBARCHIVE_VERSION).tar.gz:
-	$(call download,$(LIBARCHIVE_URL))
+	$(call download_pkg,$(LIBARCHIVE_URL),libarchive)
 
 .sum-libarchive: libarchive-$(LIBARCHIVE_VERSION).tar.gz
 
 libarchive: libarchive-$(LIBARCHIVE_VERSION).tar.gz .sum-libarchive
 	$(UNPACK)
 	$(APPLY) $(SRC)/libarchive/0001-Fix-build-failure-without-STATVFS.patch
+	$(call pkg_static,"build/pkgconfig/libarchive.pc.in")
 	$(MOVE)
 
 .libarchive: libarchive
 	cd $< && $(HOSTVARS) ./configure $(HOSTCONF) \
-		--disable-bsdcpio --disable-bsdtar --without-nettle
+		--disable-bsdcpio --disable-bsdtar --without-nettle --without-bz2lib \
+		--without-xml2 --without-lzmadec --without-iconv --without-expat
 	cd $< && $(MAKE) install
 	touch $@

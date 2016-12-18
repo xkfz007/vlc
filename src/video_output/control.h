@@ -24,11 +24,14 @@
 #ifndef LIBVLC_VOUT_INTERNAL_CONTROL_H
 #define LIBVLC_VOUT_INTERNAL_CONTROL_H
 
+#include <vlc_vout_window.h>
+
 /* */
 enum {
     VOUT_CONTROL_INIT,
     VOUT_CONTROL_CLEAN,
     VOUT_CONTROL_REINIT,                /* cfg */
+    VOUT_CONTROL_CANCEL,
 
 #if 0
     /* */
@@ -50,6 +53,7 @@ enum {
 
     VOUT_CONTROL_FULLSCREEN,            /* bool */
     VOUT_CONTROL_WINDOW_STATE,          /* unsigned */
+    VOUT_CONTROL_WINDOW_MOUSE,          /* window_mouse */
     VOUT_CONTROL_DISPLAY_FILLED,        /* bool */
     VOUT_CONTROL_ZOOM,                  /* pair */
 
@@ -57,6 +61,7 @@ enum {
     VOUT_CONTROL_CROP_BORDER,           /* border */
     VOUT_CONTROL_CROP_RATIO,            /* pair */
     VOUT_CONTROL_CROP_WINDOW,           /* window */
+    VOUT_CONTROL_VIEWPOINT,             /* viewpoint */
 };
 
 typedef struct {
@@ -92,8 +97,10 @@ typedef struct {
             unsigned width;
             unsigned height;
         } window;
+        vout_window_mouse_event_t window_mouse;
         const vout_configuration_t *cfg;
         subpicture_t *subpicture;
+        vlc_viewpoint_t viewpoint;
     } u;
 } vout_control_cmd_t;
 

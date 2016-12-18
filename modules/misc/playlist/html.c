@@ -50,9 +50,6 @@ static void DoChildren( playlist_export_t *p_export, playlist_item_t *p_root )
         playlist_item_t *p_current = p_root->pp_children[i];
         assert( p_current );
 
-        if( p_current->i_flags & PLAYLIST_SAVE_FLAG )
-            continue;
-
         if( p_current->i_children >= 0 )
         {
             DoChildren( p_export, p_current );
@@ -62,7 +59,7 @@ static void DoChildren( playlist_export_t *p_export, playlist_item_t *p_root )
         char* psz_name = NULL;
         char *psz_tmp = input_item_GetName( p_current->p_input );
         if( psz_tmp )
-            psz_name = convert_xml_special_chars( psz_tmp );
+            psz_name = vlc_xml_encode( psz_tmp );
         free( psz_tmp );
 
         if( psz_name )
@@ -70,7 +67,7 @@ static void DoChildren( playlist_export_t *p_export, playlist_item_t *p_root )
             char* psz_artist = NULL;
             psz_tmp = input_item_GetArtist( p_current->p_input );
             if( psz_tmp )
-                psz_artist = convert_xml_special_chars( psz_tmp );
+                psz_artist = vlc_xml_encode( psz_tmp );
             free( psz_tmp );
 
             mtime_t i_duration = input_item_GetDuration( p_current->p_input );

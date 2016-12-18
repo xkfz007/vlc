@@ -121,6 +121,17 @@ VLC_API void picture_pool_Release( picture_pool_t * );
 VLC_API picture_t * picture_pool_Get( picture_pool_t * ) VLC_USED;
 
 /**
+ * Obtains a picture from a pool.
+ *
+ * The picture must be released with picture_Release().
+ *
+ * @return a picture or NULL on memory error
+ *
+ * @note This function is thread-safe.
+ */
+VLC_API picture_t *picture_pool_Wait(picture_pool_t *) VLC_USED;
+
+/**
  * Enumerates all pictures in a pool, both free and allocated.
  *
  * @param cb callback to invoke once for each picture
@@ -137,13 +148,23 @@ VLC_API void picture_pool_Enum( picture_pool_t *,
 /**
  * Forcefully return all pictures in the pool to free/unallocated state.
  *
- * @warning This can only be called when it is known that all pending
- * references to the picture pool are stale, e.g. a decoder failed to
- * release pictures properly when it terminated.
+ * @warning If any picture in the pool is not free, this function will leak
+ * and may eventually cause invalid memory accesses.
+ *
+ * @note This function has no effects if all pictures in the pool are free.
  *
  * @return the number of picture references that were freed
  */
 unsigned picture_pool_Reset( picture_pool_t * );
+
+/**
+ * Cancel the picture pool.
+ *
+ * It won't return any pictures via picture_pool_Get or picture_pool_Wait if
+ * canceled is true. This function will also unblock picture_pool_Wait.
+ * picture_pool_Reset will also reset the cancel state to false.
+ */
+void picture_pool_Cancel( picture_pool_t *, bool canceled );
 
 /**
  * Reserves pictures from a pool and creates a new pool with those.

@@ -40,6 +40,7 @@
 #include <vlc_bits.h>
 #include <vlc_block_helper.h>
 #include "packetizer_helper.h"
+#include "startcode_helper.h"
 
 /*****************************************************************************
  * Module descriptor
@@ -91,6 +92,7 @@ struct decoder_sys_t
 };
 
 static block_t *Packetize( decoder_t *, block_t ** );
+static void PacketizeFlush( decoder_t * );
 
 static void PacketizeReset( void *p_private, bool b_broken );
 static block_t *PacketizeParse( void *p_private, bool *pb_ts_used, block_t * );
@@ -141,7 +143,7 @@ static int Open( vlc_object_t *p_this )
 
     /* Misc init */
     packetizer_Init( &p_sys->packetizer,
-                     p_mp4v_startcode, sizeof(p_mp4v_startcode),
+                     p_mp4v_startcode, sizeof(p_mp4v_startcode), startcode_FindAnnexB,
                      NULL, 0, 4,
                      PacketizeReset, PacketizeParse, PacketizeValidate, p_dec );
 
@@ -175,6 +177,7 @@ static int Open( vlc_object_t *p_this )
 
     /* Set callback */
     p_dec->pf_packetize = Packetize;
+    p_dec->pf_flush = PacketizeFlush;
 
     return VLC_SUCCESS;
 }
@@ -201,6 +204,13 @@ static block_t *Packetize( decoder_t *p_dec, block_t **pp_block )
     decoder_sys_t *p_sys = p_dec->p_sys;
 
     return packetizer_Packetize( &p_sys->packetizer, pp_block );
+}
+
+static void PacketizeFlush( decoder_t *p_dec )
+{
+    decoder_sys_t *p_sys = p_dec->p_sys;
+
+    packetizer_Flush( &p_sys->packetizer );
 }
 
 /*****************************************************************************
@@ -345,7 +355,7 @@ static int ParseVOL( decoder_t *p_dec, es_format_t *fmt,
                      uint8_t *p_vol, int i_vol )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
-    int i_vo_type, i_vo_ver_id, i_ar, i_shape;
+    int i_vo_ver_id, i_ar, i_shape;
     bs_t s;
 
     for( ;; )
@@ -360,7 +370,7 @@ static int ParseVOL( decoder_t *p_dec, es_format_t *fmt,
     bs_init( &s, &p_vol[4], i_vol - 4 );
 
     bs_skip( &s, 1 );   /* random access */
-    i_vo_type = bs_read( &s, 8 );
+    bs_skip( &s, 8 );   /* vo_type */
     if( bs_read1( &s ) )
     {
         i_vo_ver_id = bs_read( &s, 4 );
@@ -373,19 +383,14 @@ static int ParseVOL( decoder_t *p_dec, es_format_t *fmt,
     i_ar = bs_read( &s, 4 );
     if( i_ar == 0xf )
     {
-        int i_ar_width, i_ar_height;
-
-        i_ar_width = bs_read( &s, 8 );
-        i_ar_height= bs_read( &s, 8 );
+        bs_skip( &s, 8 );  /* ar_width */
+        bs_skip( &s, 8 );  /* ar_height */
     }
     if( bs_read1( &s ) )
     {
-        int i_chroma_format;
-        int i_low_delay;
-
         /* vol control parameter */
-        i_chroma_format = bs_read( &s, 2 );
-        i_low_delay = bs_read1( &s );
+        bs_skip( &s, 2 ); /* chroma_format */
+        bs_read1( &s ); /* low_delay */
 
         if( bs_read1( &s ) )
         {

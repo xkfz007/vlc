@@ -30,19 +30,18 @@
 #include <vlc_subpicture.h>
 
 /**
+ * \defgroup codec Codec
+ * Decoders and encoders
+ * @{
  * \file
- * This file defines the structure and types used by decoders and encoders
+ * Decoder and encoder modules interface
+ *
+ * \defgroup decoder Decoder
+ * Audio, video and text decoders
+ * @{
  */
 
 typedef struct decoder_owner_sys_t decoder_owner_sys_t;
-
-/**
- * \defgroup decoder Decoder
- *
- * The structure describing a decoder
- *
- * @{
- */
 
 /*
  * BIG FAT WARNING : the code relies in the first 4 members of filter_t
@@ -63,17 +62,42 @@ struct decoder_t
     /* Output format of decoder/packetizer */
     es_format_t         fmt_out;
 
-    /* Some decoders only accept packetized data (ie. not truncated) */
-    bool                b_need_packetized;
-
     /* Tell the decoder if it is allowed to drop frames */
-    bool                b_pace_control;
+    bool                b_frame_drop_allowed;
 
+    /* All pf_decode_* and pf_packetize functions have the same behavior.
+     *
+     * These functions are called in a loop with the same pp_block argument
+     * until they return NULL. This allows a module implementation to return
+     * more than one frames/samples for one input block.
+     *
+     * pp_block or *pp_block can be NULL.
+     *
+     * If pp_block and *pp_block are not NULL, the module implementation will
+     * own the input block (*pp_block) and should process and release it. The
+     * module can also process a part of the block. In that case, it should
+     * modify (*pp_block)->p_buffer/i_buffer accordingly and return a valid
+     * frame/samples. The module can also set *pp_block to NULL when the input
+     * block is consumed.
+     *
+     * If pp_block is not NULL but *pp_block is NULL, a previous call of the pf
+     * function has set the *pp_block to NULL. Here, the module can return new
+     * frames/samples for the same, already processed, input block (the pf
+     * function will be called as long as the module return a frame/samples).
+     *
+     * When the pf function returns NULL, the next call to this function will
+     * have a new a valid pp_block (if the decoder is not drained).
+     *
+     * If pp_block is NULL, the decoder asks the module to drain itself. In
+     * that case, the module has to return all frames/samples available (the pf
+     * function will be called as long as the module return a frame/samples).
+     */
+    picture_t *         ( * pf_decode_video )( decoder_t *, block_t **pp_block );
+    block_t *           ( * pf_decode_audio )( decoder_t *, block_t **pp_block );
+    subpicture_t *      ( * pf_decode_sub)   ( decoder_t *, block_t **pp_block );
+    block_t *           ( * pf_packetize )   ( decoder_t *, block_t **pp_block );
     /* */
-    picture_t *         ( * pf_decode_video )( decoder_t *, block_t ** );
-    block_t *           ( * pf_decode_audio )( decoder_t *, block_t ** );
-    subpicture_t *      ( * pf_decode_sub)   ( decoder_t *, block_t ** );
-    block_t *           ( * pf_packetize )   ( decoder_t *, block_t ** );
+    void                ( * pf_flush ) ( decoder_t * );
 
     /* Closed Caption (CEA 608/708) extraction.
      * If set, it *may* be called after pf_decode_video/pf_packetize
@@ -124,6 +148,13 @@ struct decoder_t
      * XXX use decoder_GetDisplayRate */
     int             (*pf_get_display_rate)( decoder_t * );
 
+    /* XXX use decoder_QueueVideo */
+    int             (*pf_queue_video)( decoder_t *, picture_t * );
+    /* XXX use decoder_QueueAudio */
+    int             (*pf_queue_audio)( decoder_t *, block_t * );
+    /* XXX use decoder_QueueSub */
+    int             (*pf_queue_sub)( decoder_t *, subpicture_t *);
+
     /* Private structure for the owner of the decoder */
     decoder_owner_sys_t *p_owner;
 
@@ -136,9 +167,7 @@ struct decoder_t
 
 /**
  * \defgroup encoder Encoder
- *
- * The structure describing a Encoder
- *
+ * Audio, video and text encoders
  * @{
  */
 
@@ -172,14 +201,26 @@ struct encoder_t
 
 /**
  * @}
+ *
+ * \ingroup decoder
+ * @{
  */
 
-
 /**
+ * Updates the video output format.
+ *
  * This function notifies the video output pipeline of a new video output
- * format (fmt_out.video). If there is currently no video output or if the
- * video output format has changed, a new video output will be set up.
- * @return 0 if the video output is working, -1 if not. */
+ * format (fmt_out.video). If there was no video output from the decoder so far
+ * or if the video output format has changed, a new video output will be set
+ * up. decoder_NewPicture() can then be used to allocate picture buffers.
+ *
+ * If the format is unchanged, this function has no effects and returns zero.
+ *
+ * \note
+ * This function is not reentrant.
+ *
+ * @return 0 if the video output was set up successfully, -1 otherwise.
+ */
 static inline int decoder_UpdateVideoFormat( decoder_t *dec )
 {
     if( dec->pf_vout_format_update != NULL )
@@ -189,11 +230,94 @@ static inline int decoder_UpdateVideoFormat( decoder_t *dec )
 }
 
 /**
- * This function will return a new picture usable by a decoder as an output
- * buffer. You have to release it using picture_Release() or by returning
- * it to the caller as a pf_decode_video return value.
+ * Allocates an output picture buffer.
+ *
+ * This function pulls an output picture buffer for the decoder from the
+ * buffer pool of the video output. The picture must be released with
+ * picture_Release() when it is no longer referenced by the decoder.
+ *
+ * \note
+ * This function is reentrant. However, decoder_UpdateVideoFormat() cannot be
+ * used concurrently; the caller is responsible for serialization.
+ *
+ * \warning
+ * The behaviour is undefined if decoder_UpdateVideoFormat() was not called or
+ * if the last call returned an error.
+ *
+ * \return a picture buffer on success, NULL on error
  */
-VLC_API picture_t * decoder_NewPicture( decoder_t * ) VLC_USED;
+VLC_USED
+static inline picture_t *decoder_NewPicture( decoder_t *dec )
+{
+    return dec->pf_vout_buffer_new( dec );
+}
+
+/**
+ * Abort any calls of decoder_NewPicture
+ *
+ * If b_abort is true, all pending and futures calls of decoder_NewPicture
+ * will be aborted. This function can be used by asynchronous video decoders
+ * to unblock a thread that is waiting for a picture.
+ */
+VLC_API void decoder_AbortPictures( decoder_t *dec, bool b_abort );
+
+/**
+ * This function queues a picture to the video output.
+ *
+ * \note
+ * The caller doesn't own the picture anymore after this call (even in case of
+ * error).
+ * FIXME: input_DecoderFrameNext won't work if a module use this function.
+ *
+ * \return 0 if the picture is queued, -1 on error
+ */
+static inline int decoder_QueueVideo( decoder_t *dec, picture_t *p_pic )
+{
+    if( !dec->pf_queue_video )
+    {
+        picture_Release( p_pic );
+        return -1;
+    }
+    return dec->pf_queue_video( dec, p_pic );
+}
+
+/**
+ * This function queues an audio block to the audio output.
+ *
+ * \note
+ * The caller doesn't own the audio block anymore after this call (even in case
+ * of error).
+ *
+ * \return 0 if the block is queued, -1 on error
+ */
+static inline int decoder_QueueAudio( decoder_t *dec, block_t *p_aout_buf )
+{
+    if( !dec->pf_queue_audio )
+    {
+        block_Release( p_aout_buf );
+        return -1;
+    }
+    return dec->pf_queue_audio( dec, p_aout_buf );
+}
+
+/**
+ * This function queues a subtitle to the video output.
+ *
+ * \note
+ * The caller doesn't own the subtitle anymore after this call (even in case of
+ * error).
+ *
+ * \return 0 if the subtitle is queued, -1 on error
+ */
+static inline int decoder_QueueSub( decoder_t *dec, subpicture_t *p_spu )
+{
+    if( !dec->pf_queue_sub )
+    {
+        subpicture_Delete( p_spu );
+        return -1;
+    }
+    return dec->pf_queue_sub( dec, p_spu );
+}
 
 /**
  * This function notifies the audio output pipeline of a new audio output
@@ -222,6 +346,13 @@ VLC_API block_t * decoder_NewAudioBuffer( decoder_t *, int i_size ) VLC_USED;
  */
 VLC_API subpicture_t * decoder_NewSubpicture( decoder_t *, const subpicture_updater_t * ) VLC_USED;
 
+/*
+ * Request that the decoder should be reloaded. The current module will be
+ * unloaded. Reloading a module may cause a loss of frames. There is no
+ * warranty that pf_decode_* callbacks won't be called again after this call.
+ */
+VLC_API void decoder_RequestReload( decoder_t * );
+
 /**
  * This function gives all input attachments at once.
  *
@@ -242,4 +373,6 @@ VLC_API mtime_t decoder_GetDisplayDate( decoder_t *, mtime_t ) VLC_USED;
  */
 VLC_API int decoder_GetDisplayRate( decoder_t * ) VLC_USED;
 
+/** @} */
+/** @} */
 #endif /* _VLC_CODEC_H */

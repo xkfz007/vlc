@@ -33,9 +33,11 @@
 #include <vlc_common.h>
 #include <vlc_plugin.h>
 #include <vlc_filter.h>
+#include <vlc_picture.h>
 #include <vlc_cpu.h>
 
 #include <libswscale/swscale.h>
+#include <libswscale/version.h>
 
 #ifdef __APPLE__
 # include <TargetConditionals.h>
@@ -66,7 +68,7 @@ const char *const ppsz_mode_descriptions[] =
 vlc_module_begin ()
     set_description( N_("Video scaling filter") )
     set_shortname( N_("Swscale" ) )
-    set_capability( "video filter2", 150 )
+    set_capability( "video converter", 150 )
     set_category( CAT_VIDEO )
     set_subcategory( SUBCAT_VIDEO_VFILTER )
     set_callbacks( OpenScaler, CloseScaler )
@@ -226,6 +228,7 @@ static int GetSwsCpuMask(void)
 {
     int i_sws_cpu = 0;
 
+#if LIBSWSCALE_VERSION_MAJOR < 4
 #if defined(__i386__) || defined(__x86_64__)
     if( vlc_CPU_MMX() )
         i_sws_cpu |= SWS_CPU_CAPS_MMX;
@@ -239,6 +242,7 @@ static int GetSwsCpuMask(void)
     if( vlc_CPU_ALTIVEC() )
         i_sws_cpu |= SWS_CPU_CAPS_ALTIVEC;
 #endif
+#endif
 
     return i_sws_cpu;
 }
@@ -248,35 +252,35 @@ static void FixParameters( int *pi_fmt, bool *pb_has_a, bool *pb_swap_uv, vlc_fo
     switch( fmt )
     {
     case VLC_CODEC_YUV422A:
-        *pi_fmt = PIX_FMT_YUV422P;
+        *pi_fmt = AV_PIX_FMT_YUV422P;
         *pb_has_a = true;
         break;
     case VLC_CODEC_YUV420A:
-        *pi_fmt = PIX_FMT_YUV420P;
+        *pi_fmt = AV_PIX_FMT_YUV420P;
         *pb_has_a = true;
         break;
     case VLC_CODEC_YUVA:
-        *pi_fmt = PIX_FMT_YUV444P;
+        *pi_fmt = AV_PIX_FMT_YUV444P;
         *pb_has_a = true;
         break;
     case VLC_CODEC_RGBA:
-        *pi_fmt = PIX_FMT_BGR32;
+        *pi_fmt = AV_PIX_FMT_BGR32;
         *pb_has_a = true;
         break;
     case VLC_CODEC_ARGB:
-        *pi_fmt = PIX_FMT_BGR32_1;
+        *pi_fmt = AV_PIX_FMT_BGR32_1;
         *pb_has_a = true;
         break;
     case VLC_CODEC_BGRA:
-        *pi_fmt = PIX_FMT_RGB32;
+        *pi_fmt = AV_PIX_FMT_RGB32;
         *pb_has_a = true;
         break;
     case VLC_CODEC_YV12:
-        *pi_fmt = PIX_FMT_YUV420P;
+        *pi_fmt = AV_PIX_FMT_YUV420P;
         *pb_swap_uv = true;
         break;
     case VLC_CODEC_YV9:
-        *pi_fmt = PIX_FMT_YUV410P;
+        *pi_fmt = AV_PIX_FMT_YUV410P;
         *pb_swap_uv = true;
         break;
     default:
@@ -305,7 +309,7 @@ static int GetParameters( ScalerConfiguration *p_cfg,
     {
         if( p_fmti->i_chroma == VLC_CODEC_YUVP && ALLOW_YUVP )
         {
-            i_fmti = i_fmto = PIX_FMT_GRAY8;
+            i_fmti = i_fmto = AV_PIX_FMT_GRAY8;
             i_sws_flags = SWS_POINT;
         }
     }
@@ -318,9 +322,9 @@ static int GetParameters( ScalerConfiguration *p_cfg,
      * Without SWS_ACCURATE_RND the quality is really bad for some conversions */
     switch( i_fmto )
     {
-    case PIX_FMT_ARGB:
-    case PIX_FMT_RGBA:
-    case PIX_FMT_ABGR:
+    case AV_PIX_FMT_ARGB:
+    case AV_PIX_FMT_RGBA:
+    case AV_PIX_FMT_ABGR:
         i_sws_flags |= SWS_ACCURATE_RND;
         break;
     }
@@ -394,8 +398,8 @@ static int Init( filter_t *p_filter )
     const unsigned i_fmto_visible_width = p_fmto->i_visible_width * p_sys->i_extend_factor;
     for( int n = 0; n < (cfg.b_has_a ? 2 : 1); n++ )
     {
-        const int i_fmti = n == 0 ? cfg.i_fmti : PIX_FMT_GRAY8;
-        const int i_fmto = n == 0 ? cfg.i_fmto : PIX_FMT_GRAY8;
+        const int i_fmti = n == 0 ? cfg.i_fmti : AV_PIX_FMT_GRAY8;
+        const int i_fmto = n == 0 ? cfg.i_fmto : AV_PIX_FMT_GRAY8;
         struct SwsContext *ctx;
 
         ctx = sws_getContext( i_fmti_visible_width, p_fmti->i_visible_height, i_fmti,
@@ -591,13 +595,9 @@ static void Convert( filter_t *p_filter, struct SwsContext *ctx,
                p_src, i_plane_count, b_swap_uvi );
     if( p_filter->fmt_in.video.i_chroma == VLC_CODEC_RGBP )
     {
-        video_palette_t *src_pal =
-            p_src->format.p_palette ?
-            p_src->format.p_palette :
-            p_filter->fmt_in.video.p_palette;
         memset( palette, 0, sizeof(palette) );
-        if( src_pal )
-            memcpy( palette, src_pal->palette,
+        if( p_filter->fmt_in.video.p_palette )
+            memcpy( palette, p_filter->fmt_in.video.p_palette->palette,
                     __MIN( sizeof(video_palette_t), AVPALETTE_SIZE ) );
         src[1] = palette;
         src_stride[1] = 4;
@@ -658,8 +658,13 @@ static picture_t *Filter( filter_t *p_filter, picture_t *p_pic )
     else if( p_sys->b_copy )
         SwapUV( p_dst, p_src );
     else
+    {
+        /* Even if alpha is unused, swscale expects the pointer to be set */
+        const int n_planes = !p_sys->ctxA && (p_src->i_planes == 4 ||
+                             p_dst->i_planes == 4) ? 4 : 3;
         Convert( p_filter, p_sys->ctx, p_dst, p_src, p_fmti->i_visible_height,
-                 3, p_sys->b_swap_uvi, p_sys->b_swap_uvo );
+                 n_planes, p_sys->b_swap_uvi, p_sys->b_swap_uvo );
+    }
     if( p_sys->ctxA )
     {
         /* We extract the A plane to rescale it, and then we reinject it. */

@@ -27,85 +27,91 @@
 #endif
 
 #include "IsoffMainParser.h"
-#include "../adaptative/playlist/SegmentTemplate.h"
-#include "../adaptative/playlist/Segment.h"
-#include "../adaptative/playlist/SegmentBase.h"
-#include "../adaptative/playlist/SegmentList.h"
-#include "../adaptative/playlist/SegmentTimeline.h"
+#include "../adaptive/playlist/SegmentTemplate.h"
+#include "../adaptive/playlist/Segment.h"
+#include "../adaptive/playlist/SegmentBase.h"
+#include "../adaptive/playlist/SegmentList.h"
+#include "../adaptive/playlist/SegmentTimeline.h"
+#include "../adaptive/playlist/SegmentInformation.hpp"
 #include "MPD.h"
 #include "Representation.h"
 #include "Period.h"
 #include "AdaptationSet.h"
 #include "ProgramInformation.h"
 #include "DASHSegment.h"
-#include "xml/DOMHelper.h"
-#include <vlc_strings.h>
+#include "../adaptive/xml/DOMHelper.h"
+#include "../adaptive/tools/Helper.h"
+#include "../adaptive/tools/Debug.hpp"
+#include "../adaptive/tools/Conversions.hpp"
 #include <vlc_stream.h>
 #include <cstdio>
-#include <sstream>
 
 using namespace dash::mpd;
-using namespace dash::xml;
-using namespace adaptative::playlist;
+using namespace adaptive::xml;
+using namespace adaptive::playlist;
 
-IsoffMainParser::IsoffMainParser    (Node *root_, stream_t *stream)
+IsoffMainParser::IsoffMainParser    (Node *root_, vlc_object_t *p_object_,
+                                     stream_t *stream, const std::string & streambaseurl_)
 {
     root = root_;
-    mpd = NULL;
     p_stream = stream;
+    p_object = p_object_;
+    playlisturl = streambaseurl_;
 }
 
 IsoffMainParser::~IsoffMainParser   ()
 {
 }
 
-void IsoffMainParser::setMPDBaseUrl(Node *root)
+void IsoffMainParser::parseMPDBaseUrl(MPD *mpd, Node *root)
 {
     std::vector<Node *> baseUrls = DOMHelper::getChildElementByTagName(root, "BaseURL");
 
     for(size_t i = 0; i < baseUrls.size(); i++)
         mpd->addBaseUrl(baseUrls.at(i)->getText());
+
+    mpd->setPlaylistUrl( Helper::getDirectoryPath(playlisturl).append("/") );
 }
 
-MPD* IsoffMainParser::getMPD()
+MPD * IsoffMainParser::parse()
 {
+    MPD *mpd = new (std::nothrow) MPD(p_object, getProfile());
+    if(mpd)
+    {
+        parseMPDAttributes(mpd, root);
+        parseProgramInformation(DOMHelper::getFirstChildElementByName(root, "ProgramInformation"), mpd);
+        parseMPDBaseUrl(mpd, root);
+        parsePeriods(mpd, root);
+        mpd->debug();
+    }
     return mpd;
 }
 
-bool    IsoffMainParser::parse              (Profile profile)
+void    IsoffMainParser::parseMPDAttributes   (MPD *mpd, xml::Node *node)
 {
-    mpd = new MPD(p_stream, profile);
-    setMPDAttributes();
-    parseProgramInformation(DOMHelper::getFirstChildElementByName(root, "ProgramInformation"), mpd);
-    setMPDBaseUrl(root);
-    parsePeriods(root);
-
-    if(mpd)
-        mpd->debug();
-    return true;
-}
-
-void    IsoffMainParser::setMPDAttributes   ()
-{
-    const std::map<std::string, std::string> attr = this->root->getAttributes();
+    const std::map<std::string, std::string> attr = node->getAttributes();
 
     std::map<std::string, std::string>::const_iterator it;
 
     it = attr.find("mediaPresentationDuration");
     if(it != attr.end())
-        this->mpd->duration.Set(IsoTime(it->second));
+        mpd->duration.Set(IsoTime(it->second) * CLOCK_FREQ);
 
     it = attr.find("minBufferTime");
     if(it != attr.end())
-        this->mpd->minBufferTime.Set(IsoTime(it->second));
+        mpd->setMinBuffering(IsoTime(it->second) * CLOCK_FREQ);
 
     it = attr.find("minimumUpdatePeriod");
     if(it != attr.end())
-        mpd->minUpdatePeriod.Set(IsoTime(it->second));
+    {
+        mtime_t minupdate = IsoTime(it->second) * CLOCK_FREQ;
+        if(minupdate > 0)
+            mpd->minUpdatePeriod.Set(minupdate);
+    }
 
     it = attr.find("maxSegmentDuration");
     if(it != attr.end())
-        mpd->maxSegmentDuration.Set(IsoTime(it->second));
+        mpd->maxSegmentDuration.Set(IsoTime(it->second) * CLOCK_FREQ);
 
     it = attr.find("type");
     if(it != attr.end())
@@ -113,35 +119,34 @@ void    IsoffMainParser::setMPDAttributes   ()
 
     it = attr.find("availabilityStartTime");
     if(it != attr.end())
-        mpd->availabilityStartTime.Set(UTCTime(it->second));
+        mpd->availabilityStartTime.Set(UTCTime(it->second).time());
 
     it = attr.find("timeShiftBufferDepth");
         if(it != attr.end())
-            mpd->timeShiftBufferDepth.Set(IsoTime(it->second));
+            mpd->timeShiftBufferDepth.Set(IsoTime(it->second) * CLOCK_FREQ);
 }
 
-void IsoffMainParser::parsePeriods(Node *root)
+void IsoffMainParser::parsePeriods(MPD *mpd, Node *root)
 {
     std::vector<Node *> periods = DOMHelper::getElementByTagName(root, "Period", false);
     std::vector<Node *>::const_iterator it;
+    uint64_t nextid = 0;
 
     for(it = periods.begin(); it != periods.end(); ++it)
     {
         Period *period = new (std::nothrow) Period(mpd);
         if (!period)
             continue;
-        parseSegmentInformation(*it, period);
+        parseSegmentInformation(*it, period, &nextid);
         if((*it)->hasAttribute("start"))
-            period->startTime.Set(IsoTime((*it)->getAttributeValue("start")));
+            period->startTime.Set(IsoTime((*it)->getAttributeValue("start")) * CLOCK_FREQ);
         if((*it)->hasAttribute("duration"))
-            period->duration.Set(IsoTime((*it)->getAttributeValue("duration")));
-        if((*it)->hasAttribute("id"))
-            period->setId((*it)->getAttributeValue("id"));
+            period->duration.Set(IsoTime((*it)->getAttributeValue("duration")) * CLOCK_FREQ);
         std::vector<Node *> baseUrls = DOMHelper::getChildElementByTagName(*it, "BaseURL");
         if(!baseUrls.empty())
             period->baseUrl.Set( new Url( baseUrls.front()->getText() ) );
 
-        setAdaptationSets(*it, period);
+        parseAdaptationSets(*it, period);
         mpd->addPeriod(period);
     }
 }
@@ -161,11 +166,11 @@ size_t IsoffMainParser::parseSegmentTemplate(Node *templateNode, SegmentInformat
     if(templateNode->hasAttribute("startNumber"))
         mediaTemplate->startNumber.Set(Integer<uint64_t>(templateNode->getAttributeValue("startNumber")));
 
-    if(templateNode->hasAttribute("duration"))
-        mediaTemplate->duration.Set(Integer<mtime_t>(templateNode->getAttributeValue("duration")));
-
     if(templateNode->hasAttribute("timescale"))
-        mediaTemplate->timescale.Set(Integer<uint64_t>(templateNode->getAttributeValue("timescale")));
+        mediaTemplate->setTimescale(Integer<uint64_t>(templateNode->getAttributeValue("timescale")));
+
+    if(templateNode->hasAttribute("duration"))
+        mediaTemplate->duration.Set(Integer<stime_t>(templateNode->getAttributeValue("duration")));
 
     InitSegmentTemplate *initTemplate = NULL;
 
@@ -175,34 +180,48 @@ size_t IsoffMainParser::parseSegmentTemplate(Node *templateNode, SegmentInformat
         if(!initurl.empty() && (initTemplate = new (std::nothrow) InitSegmentTemplate(info)))
             initTemplate->setSourceUrl(initurl);
     }
-
     mediaTemplate->initialisationSegment.Set(initTemplate);
-    info->setSegmentTemplate(mediaTemplate);
 
     parseTimeline(DOMHelper::getFirstChildElementByName(templateNode, "SegmentTimeline"), mediaTemplate);
 
-    total += ( mediaTemplate != NULL );
+    info->setSegmentTemplate(mediaTemplate);
 
-    return total;
+    return ++total;
 }
 
-size_t IsoffMainParser::parseSegmentInformation(Node *node, SegmentInformation *info)
+size_t IsoffMainParser::parseSegmentInformation(Node *node, SegmentInformation *info, uint64_t *nextid)
 {
     size_t total = 0;
     total += parseSegmentBase(DOMHelper::getFirstChildElementByName(node, "SegmentBase"), info);
     total += parseSegmentList(DOMHelper::getFirstChildElementByName(node, "SegmentList"), info);
     total += parseSegmentTemplate(DOMHelper::getFirstChildElementByName(node, "SegmentTemplate" ), info);
-    if(node->hasAttribute("bitstreamSwitching"))
-        info->setBitstreamSwitching(node->getAttributeValue("bitstreamSwitching") == "true");
+    if(node->hasAttribute("bitstreamSwitching") && node->getAttributeValue("bitstreamSwitching") == "true")
+    {
+        info->setSwitchPolicy(SegmentInformation::SWITCH_BITSWITCHEABLE);
+    }
+    else if(node->hasAttribute("segmentAlignment"))
+    {
+        if( node->getAttributeValue("segmentAlignment") == "true" )
+            info->setSwitchPolicy(SegmentInformation::SWITCH_SEGMENT_ALIGNED);
+        else
+            info->setSwitchPolicy(SegmentInformation::SWITCH_UNAVAILABLE);
+    }
     if(node->hasAttribute("timescale"))
-        info->timescale.Set(Integer<uint64_t>(node->getAttributeValue("timescale")));
+        info->setTimescale(Integer<uint64_t>(node->getAttributeValue("timescale")));
+
+    if(node->hasAttribute("id"))
+        info->setID(node->getAttributeValue("id"));
+    else
+        info->setID(ID((*nextid)++));
+
     return total;
 }
 
-void    IsoffMainParser::setAdaptationSets  (Node *periodNode, Period *period)
+void    IsoffMainParser::parseAdaptationSets  (Node *periodNode, Period *period)
 {
     std::vector<Node *> adaptationSets = DOMHelper::getElementByTagName(periodNode, "AdaptationSet", false);
     std::vector<Node *>::const_iterator it;
+    uint64_t nextid = 0;
 
     for(it = adaptationSets.begin(); it != adaptationSets.end(); ++it)
     {
@@ -212,23 +231,46 @@ void    IsoffMainParser::setAdaptationSets  (Node *periodNode, Period *period)
         if((*it)->hasAttribute("mimeType"))
             adaptationSet->setMimeType((*it)->getAttributeValue("mimeType"));
 
+        if((*it)->hasAttribute("lang"))
+        {
+            std::string lang = (*it)->getAttributeValue("lang");
+            std::size_t pos = lang.find_first_of('-');
+            if(pos != std::string::npos && pos > 0)
+                adaptationSet->addLang(lang.substr(0, pos));
+            else if (lang.size() < 4)
+                adaptationSet->addLang(lang);
+        }
+
         Node *baseUrl = DOMHelper::getFirstChildElementByName((*it), "BaseURL");
         if(baseUrl)
             adaptationSet->baseUrl.Set(new Url(baseUrl->getText()));
 
-        parseSegmentInformation( *it, adaptationSet );
+        Node *role = DOMHelper::getFirstChildElementByName((*it), "Role");
+        if(role && role->hasAttribute("schemeIdUri") && role->hasAttribute("value"))
+        {
+            std::string uri = role->getAttributeValue("schemeIdUri");
+            if(uri == "urn:mpeg:dash:role:2011")
+                adaptationSet->description.Set(role->getAttributeValue("value"));
+        }
+#ifdef ADAPTATIVE_ADVANCED_DEBUG
+        if(adaptationSet->description.Get().empty())
+            adaptationSet->description.Set(adaptationSet->getMimeType());
+#endif
 
-        setRepresentations((*it), adaptationSet);
+        parseSegmentInformation(*it, adaptationSet, &nextid);
+
+        parseRepresentations((*it), adaptationSet);
         period->addAdaptationSet(adaptationSet);
     }
 }
-void    IsoffMainParser::setRepresentations (Node *adaptationSetNode, AdaptationSet *adaptationSet)
+void    IsoffMainParser::parseRepresentations (Node *adaptationSetNode, AdaptationSet *adaptationSet)
 {
     std::vector<Node *> representations = DOMHelper::getElementByTagName(adaptationSetNode, "Representation", false);
+    uint64_t nextid = 0;
 
     for(size_t i = 0; i < representations.size(); i++)
     {
-        Representation *currentRepresentation = new Representation(adaptationSet, getMPD());
+        Representation *currentRepresentation = new Representation(adaptationSet);
         Node *repNode = representations.at(i);
 
         std::vector<Node *> baseUrls = DOMHelper::getChildElementByTagName(repNode, "BaseURL");
@@ -236,7 +278,7 @@ void    IsoffMainParser::setRepresentations (Node *adaptationSetNode, Adaptation
             currentRepresentation->baseUrl.Set(new Url(baseUrls.front()->getText()));
 
         if(repNode->hasAttribute("id"))
-            currentRepresentation->setId(repNode->getAttributeValue("id"));
+            currentRepresentation->setID(ID(repNode->getAttributeValue("id")));
 
         if(repNode->hasAttribute("width"))
             currentRepresentation->setWidth(atoi(repNode->getAttributeValue("width").c_str()));
@@ -250,7 +292,30 @@ void    IsoffMainParser::setRepresentations (Node *adaptationSetNode, Adaptation
         if(repNode->hasAttribute("mimeType"))
             currentRepresentation->setMimeType(repNode->getAttributeValue("mimeType"));
 
-        parseSegmentInformation(repNode, currentRepresentation);
+        if(repNode->hasAttribute("codecs"))
+        {
+            std::list<std::string> list = Helper::tokenize(repNode->getAttributeValue("codecs"), ',');
+            std::list<std::string>::const_iterator it;
+            for(it=list.begin(); it!=list.end(); ++it)
+            {
+                std::size_t pos = (*it).find_first_of('.', 0);
+                if(pos != std::string::npos)
+                    currentRepresentation->addCodec((*it).substr(0, pos));
+                else
+                    currentRepresentation->addCodec(*it);
+            }
+        }
+
+        size_t i_total = parseSegmentInformation(repNode, currentRepresentation, &nextid);
+        /* Empty Representation with just baseurl (ex: subtitles) */
+        if(i_total == 0 &&
+           (currentRepresentation->baseUrl.Get() && !currentRepresentation->baseUrl.Get()->empty()) &&
+            adaptationSet->getSegment(SegmentInformation::INFOTYPE_MEDIA, 0) == NULL)
+        {
+            SegmentBase *base = new (std::nothrow) SegmentBase(currentRepresentation);
+            if(base)
+                currentRepresentation->setSegmentBase(base);
+        }
 
         adaptationSet->addRepresentation(currentRepresentation);
     }
@@ -280,6 +345,14 @@ size_t IsoffMainParser::parseSegmentBase(Node * segmentBaseNode, SegmentInformat
 
     parseInitSegment(DOMHelper::getFirstChildElementByName(segmentBaseNode, "Initialization"), base, info);
 
+    if(!base->initialisationSegment.Get() && base->indexSegment.Get() && base->indexSegment.Get()->getOffset())
+    {
+        Segment *initSeg = new InitSegment( info );
+        initSeg->setSourceUrl(base->getUrlSegment().toString());
+        initSeg->setByteRange(0, base->indexSegment.Get()->getOffset() - 1);
+        base->initialisationSegment.Set(initSeg);
+    }
+
     info->setSegmentBase(base);
 
     return 1;
@@ -288,20 +361,19 @@ size_t IsoffMainParser::parseSegmentBase(Node * segmentBaseNode, SegmentInformat
 size_t IsoffMainParser::parseSegmentList(Node * segListNode, SegmentInformation *info)
 {
     size_t total = 0;
-    mtime_t totaltime = 0;
     if(segListNode)
     {
         std::vector<Node *> segments = DOMHelper::getElementByTagName(segListNode, "SegmentURL", false);
         SegmentList *list;
-        if((list = new (std::nothrow) SegmentList()))
+        if((list = new (std::nothrow) SegmentList(info)))
         {
             parseInitSegment(DOMHelper::getFirstChildElementByName(segListNode, "Initialization"), list, info);
 
             if(segListNode->hasAttribute("duration"))
-                list->duration.Set(Integer<uint64_t>(segListNode->getAttributeValue("duration")));
+                list->duration.Set(Integer<stime_t>(segListNode->getAttributeValue("duration")));
 
             if(segListNode->hasAttribute("timescale"))
-                list->timescale.Set(Integer<uint64_t>(segListNode->getAttributeValue("timescale")));
+                list->setTimescale(Integer<uint64_t>(segListNode->getAttributeValue("timescale")));
 
             uint64_t nzStartTime = 0;
             std::vector<Node *>::const_iterator it;
@@ -324,20 +396,20 @@ size_t IsoffMainParser::parseSegmentList(Node * segListNode, SegmentInformation 
                     seg->setByteRange(atoi(range.substr(0, pos).c_str()), atoi(range.substr(pos + 1, range.size()).c_str()));
                 }
 
-                if(totaltime || list->duration.Get())
+                if(list->duration.Get())
                 {
-                    seg->startTime.Set(totaltime);
-                    totaltime += list->duration.Get();
+                    seg->startTime.Set(nzStartTime);
+                    seg->duration.Set(list->duration.Get());
+                    nzStartTime += list->duration.Get();
                 }
 
-                seg->startTime.Set(VLC_TS_0 + nzStartTime);
-                nzStartTime += CLOCK_FREQ * list->duration.Get();
+                seg->setSequenceNumber(total);
 
                 list->addSegment(seg);
                 total++;
             }
 
-            info->setSegmentList(list);
+            info->appendSegmentList(list, true);
         }
     }
     return total;
@@ -366,6 +438,12 @@ void IsoffMainParser::parseTimeline(Node *node, MediaSegmentTemplate *templ)
     if(!node)
         return;
 
+    uint64_t number = 0;
+    if(node->hasAttribute("startNumber"))
+        number = Integer<uint64_t>(node->getAttributeValue("startNumber"));
+    else if(templ->startNumber.Get())
+        number = templ->startNumber.Get();
+
     SegmentTimeline *timeline = new (std::nothrow) SegmentTimeline(templ);
     if(timeline)
     {
@@ -376,19 +454,21 @@ void IsoffMainParser::parseTimeline(Node *node, MediaSegmentTemplate *templ)
             const Node *s = *it;
             if(!s->hasAttribute("d")) /* Mandatory */
                 continue;
-            mtime_t d = Integer<mtime_t>(s->getAttributeValue("d"));
-            mtime_t r = 0; // never repeats by default
+            stime_t d = Integer<stime_t>(s->getAttributeValue("d"));
+            uint64_t r = 0; // never repeats by default
             if(s->hasAttribute("r"))
                 r = Integer<uint64_t>(s->getAttributeValue("r"));
+
             if(s->hasAttribute("t"))
             {
-                mtime_t t = Integer<mtime_t>(s->getAttributeValue("t"));
-                timeline->addElement(d, r, t);
+                stime_t t = Integer<stime_t>(s->getAttributeValue("t"));
+                timeline->addElement(number, d, r, t);
             }
-            else timeline->addElement(d, r);
+            else timeline->addElement(number, d, r);
 
-            templ->segmentTimeline.Set(timeline);
+            number += (1 + r);
         }
+        templ->segmentTimeline.Set(timeline);
     }
 }
 
@@ -419,85 +499,25 @@ void IsoffMainParser::parseProgramInformation(Node * node, MPD *mpd)
     }
 }
 
-IsoTime::IsoTime(const std::string &str)
+Profile IsoffMainParser::getProfile() const
 {
-    time = str_duration(str.c_str());
-}
+    Profile res(Profile::Unknown);
+    if(this->root == NULL)
+        return res;
 
-IsoTime::operator mtime_t () const
-{
-    return time;
-}
+    std::string urn = root->getAttributeValue("profiles");
+    if ( urn.length() == 0 )
+        urn = root->getAttributeValue("profile"); //The standard spells it the both ways...
 
-/* i_year: year - 1900  i_month: 0-11  i_mday: 1-31 i_hour: 0-23 i_minute: 0-59 i_second: 0-59 */
-static int64_t vlc_timegm( int i_year, int i_month, int i_mday, int i_hour, int i_minute, int i_second )
-{
-    static const int pn_day[12+1] = { 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334 };
-    int64_t i_day;
-
-    if( i_year < 70 ||
-        i_month < 0 || i_month > 11 || i_mday < 1 || i_mday > 31 ||
-        i_hour < 0 || i_hour > 23 || i_minute < 0 || i_minute > 59 || i_second < 0 || i_second > 59 )
-        return -1;
-
-    /* Count the number of days */
-    i_day = (int64_t)365 * (i_year-70) + pn_day[i_month] + i_mday - 1;
-#define LEAP(y) ( ((y)%4) == 0 && (((y)%100) != 0 || ((y)%400) == 0) ? 1 : 0)
-    for( int i = 70; i < i_year; i++ )
-        i_day += LEAP(1900+i);
-    if( i_month > 1 )
-        i_day += LEAP(1900+i_year);
-#undef LEAP
-    /**/
-    return ((24*i_day + i_hour)*60 + i_minute)*60 + i_second;
-}
-
-UTCTime::UTCTime(const std::string &str)
-{
-    enum { YEAR = 0, MON, DAY, HOUR, MIN, SEC, TZ };
-    int values[7] = {0};
-    std::istringstream in(str);
-
-    try
+    size_t pos;
+    size_t nextpos = -1;
+    do
     {
-        /* Date */
-        for(int i=YEAR;i<=DAY && !in.eof();i++)
-        {
-            if(i!=YEAR)
-                in.ignore(1);
-            in >> values[i];
-        }
-        /* Time */
-        if (!in.eof() && in.peek() == 'T')
-        {
-            for(int i=HOUR;i<=SEC && !in.eof();i++)
-            {
-                in.ignore(1);
-                in >> values[i];
-            }
-        }
-        /* Timezone */
-        if (!in.eof() && in.peek() == 'Z')
-        {
-            in.ignore(1);
-            while(!in.eof())
-            {
-                if(in.peek() == '+')
-                    continue;
-                in >> values[TZ];
-                break;
-            }
-        }
-
-        time = vlc_timegm( values[YEAR] - 1900, values[MON] - 1, values[DAY],
-                           values[HOUR], values[MIN], values[SEC] );
-        time += values[TZ] * 3600;
-    } catch(int) {
-        time = 0;
+        pos = nextpos + 1;
+        nextpos = urn.find_first_of(",", pos);
+        res = Profile(urn.substr(pos, nextpos - pos));
     }
-}
+    while (nextpos != std::string::npos && res == Profile::Unknown);
 
-UTCTime::operator mtime_t () const
-{
-    return time;
+    return res;
 }

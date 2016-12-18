@@ -22,6 +22,7 @@
 #define VLC_MEDIACODEC_H
 
 #include <vlc_common.h>
+#include "../../video_output/android/utils.h"
 
 typedef struct mc_api mc_api;
 typedef struct mc_api_sys mc_api_sys;
@@ -32,56 +33,123 @@ typedef int (*pf_MediaCodecApi_init)(mc_api*);
 int MediaCodecJni_Init(mc_api*);
 int MediaCodecNdk_Init(mc_api*);
 
+#define MC_API_ERROR (-1)
+#define MC_API_INFO_TRYAGAIN (-11)
+#define MC_API_INFO_OUTPUT_FORMAT_CHANGED (-12)
+#define MC_API_INFO_OUTPUT_BUFFERS_CHANGED (-13)
+
+/* in sync with OMXCODEC QUIRKS */
+#define MC_API_NO_QUIRKS 0
+#define MC_API_QUIRKS_NEED_CSD 0x1
+#define MC_API_VIDEO_QUIRKS_IGNORE_PADDING 0x2
+#define MC_API_AUDIO_QUIRKS_NEED_CHANNELS 0x4
+
 struct mc_api_out
 {
     enum {
         MC_OUT_TYPE_BUF,
         MC_OUT_TYPE_CONF,
     } type;
+    bool b_eos;
     union
     {
         struct
         {
             int i_index;
             mtime_t i_ts;
-            const void *p_ptr;
-            int i_size;
+            const uint8_t *p_ptr;
+            size_t i_size;
         } buf;
-        struct
+        union
         {
-            int width, height;
-            int stride;
-            int slice_height;
-            int pixel_format;
-            int crop_left;
-            int crop_top;
-            int crop_right;
-            int crop_bottom;
+            struct
+            {
+                unsigned int width, height;
+                unsigned int stride;
+                unsigned int slice_height;
+                int pixel_format;
+                int crop_left;
+                int crop_top;
+                int crop_right;
+                int crop_bottom;
+            } video;
+            struct
+            {
+                int channel_count;
+                int channel_mask;
+                int sample_rate;
+            } audio;
         } conf;
-    } u;
+    };
+};
+
+union mc_api_args
+{
+    struct
+    {
+        void *p_surface;
+        void *p_jsurface;
+        int i_width;
+        int i_height;
+        int i_angle;
+        bool b_tunneled_playback;
+    } video;
+    struct
+    {
+        int i_sample_rate;
+        int i_channel_count;
+    } audio;
 };
 
 struct mc_api
 {
-    vlc_object_t *p_obj;
-
     mc_api_sys *p_sys;
 
-    const char *psz_name;
-    bool b_started;
-    bool b_direct_rendering;
+    /* Set before init */
+    vlc_object_t *  p_obj;
+    const char *    psz_mime;
+    int             i_cat;
+    vlc_fourcc_t    i_codec;
+
+    /* Set after configure */
+    int  i_quirks;
+    char *psz_name;
     bool b_support_interlaced;
 
+    bool b_started;
+    bool b_direct_rendering;
+
     void (*clean)(mc_api *);
-    int (*start)(mc_api *, jobject jsurface, const char *psz_mime,
-                 int i_width, int i_height,
-                 size_t h264_profile, int i_angle);
+    int (*configure)(mc_api *, size_t i_h264_profile);
+    int (*start)(mc_api *, union mc_api_args *p_args);
     int (*stop)(mc_api *);
     int (*flush)(mc_api *);
-    int (*put_in)(mc_api *, const void *p_buf, size_t i_size,
-                  mtime_t i_ts, bool b_config, mtime_t i_timeout);
-    int (*get_out)(mc_api *, mc_api_out *p_out, mtime_t i_timeout);
+
+    /* The Dequeue functions return:
+     * - The index of the input or output buffer if >= 0,
+     * - MC_API_INFO_TRYAGAIN if no buffers where dequeued during i_timeout,
+     * - MC_API_INFO_OUTPUT_FORMAT_CHANGED if output format changed
+     * - MC_API_INFO_OUTPUT_BUFFERS_CHANGED if buffers changed
+     * - MC_API_ERROR in case of error. */
+    int (*dequeue_in)(mc_api *, mtime_t i_timeout);
+    int (*dequeue_out)(mc_api *, mtime_t i_timeout);
+
+    /* i_index is the index returned by dequeue_in and should be >= 0
+     * Returns 0 if buffer is successfully queued, or MC_API_ERROR */
+    int (*queue_in)(mc_api *, int i_index, const void *p_buf, size_t i_size,
+                    mtime_t i_ts, bool b_config);
+
+    /* i_index is the index returned by dequeue_out and should be >= 0,
+     * MC_API_INFO_OUTPUT_FORMAT_CHANGED, or MC_API_INFO_OUTPUT_BUFFERS_CHANGED.
+     * Returns 1 if p_out if valid, 0 if p_out is unchanged or MC_API_ERROR */
+    int (*get_out)(mc_api *, int i_index, mc_api_out *p_out);
+
+    /* i_index is the index returned by dequeue_out and should be >= 0 */
     int (*release_out)(mc_api *, int i_index, bool b_render);
+
+    /* Dynamically sets the output surface
+     * Returns 0 on success, or MC_API_ERROR */
+    int (*set_output_surface)(mc_api*, void *p_surface, void *p_jsurface);
 };
 
 #endif

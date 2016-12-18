@@ -58,7 +58,7 @@ vlc_module_end ()
 /*****************************************************************************
  * Exported prototypes
  *****************************************************************************/
-static block_t *BlockRead( access_t * );
+static block_t *BlockRead( access_t *, bool * );
 static int     Seek( access_t *, uint64_t );
 static int     Control( access_t *, int, va_list );
 
@@ -84,8 +84,8 @@ static int RtspConnect( void *p_userdata, char *psz_server, int i_port )
     if( p_sys->fd < 0 )
     {
         msg_Err( p_access, "cannot connect to %s:%d", psz_server, i_port );
-        dialog_Fatal( p_access, _("Connection failed"),
-                        _("VLC could not connect to \"%s:%d\"."), psz_server, i_port );
+        vlc_dialog_display_error( p_access, _("Connection failed"),
+            _("VLC could not connect to \"%s:%d\"."), psz_server, i_port );
         return VLC_EGENERIC;
     }
 
@@ -106,7 +106,7 @@ static int RtspRead( void *p_userdata, uint8_t *p_buffer, int i_buffer )
     access_t *p_access = (access_t *)p_userdata;
     access_sys_t *p_sys = p_access->p_sys;
 
-    return net_Read( p_access, p_sys->fd, p_buffer, i_buffer, true );
+    return net_Read( p_access, p_sys->fd, p_buffer, i_buffer );
 }
 
 static int RtspReadLine( void *p_userdata, uint8_t *p_buffer, int i_buffer )
@@ -148,13 +148,8 @@ static int Open( vlc_object_t *p_this )
     char* psz_server = NULL;
     int i_result;
 
-    if( !p_access->psz_access || (
-        strncmp( p_access->psz_access, "rtsp", 4 ) &&
-        strncmp( p_access->psz_access, "pnm", 3 )  &&
-        strncmp( p_access->psz_access, "realrtsp", 8 ) ))
-    {
-            return VLC_EGENERIC;
-    }
+    if( p_access->b_preparsing )
+        return VLC_EGENERIC;
 
     /* Discard legacy username/password syntax - not supported */
     const char *psz_location = strchr( p_access->psz_location, '@' );
@@ -167,8 +162,6 @@ static int Open( vlc_object_t *p_this )
     p_access->pf_block = BlockRead;
     p_access->pf_seek = Seek;
     p_access->pf_control = Control;
-    p_access->info.i_pos = 0;
-    p_access->info.b_eof = false;
     p_access->p_sys = p_sys = malloc( sizeof( access_sys_t ) );
     if( !p_sys )
         return VLC_ENOMEM;
@@ -229,8 +222,8 @@ static int Open( vlc_object_t *p_this )
 
 
             msg_Err( p_access, "rtsp session can not be established" );
-            dialog_Fatal( p_access, _("Session failed"), "%s",
-                    _("The requested RTSP session could not be established.") );
+            vlc_dialog_display_error( p_access, _("Session failed"), "%s",
+                _("The requested RTSP session could not be established.") );
             goto error;
         }
 
@@ -270,7 +263,7 @@ static void Close( vlc_object_t * p_this )
 /*****************************************************************************
  * Read: standard read on a file descriptor.
  *****************************************************************************/
-static block_t *BlockRead( access_t *p_access )
+static block_t *BlockRead( access_t *p_access, bool *restrict eof )
 {
     access_sys_t *p_sys = p_access->p_sys;
     block_t *p_block;
@@ -284,13 +277,14 @@ static block_t *BlockRead( access_t *p_access )
         return p_block;
     }
 
-    i_size = real_get_rdt_chunk_header( p_access->p_sys->p_rtsp, &pheader );
+    i_size = real_get_rdt_chunk_header( p_sys->p_rtsp, &pheader );
     if( i_size <= 0 ) return NULL;
 
     p_block = block_Alloc( i_size );
-    p_block->i_buffer = real_get_rdt_chunk( p_access->p_sys->p_rtsp, &pheader,
+    p_block->i_buffer = real_get_rdt_chunk( p_sys->p_rtsp, &pheader,
                                             &p_block->p_buffer );
 
+    (void) eof;
     return p_block;
 }
 
@@ -311,22 +305,22 @@ static int Control( access_t *p_access, int i_query, va_list args )
 {
     switch( i_query )
     {
-        case ACCESS_CAN_SEEK:
-        case ACCESS_CAN_FASTSEEK:
-        case ACCESS_CAN_PAUSE:
+        case STREAM_CAN_SEEK:
+        case STREAM_CAN_FASTSEEK:
+        case STREAM_CAN_PAUSE:
             *va_arg( args, bool* ) = false;
             break;
 
-        case ACCESS_CAN_CONTROL_PACE:
+        case STREAM_CAN_CONTROL_PACE:
             *va_arg( args, bool* ) = true;
             break;
 
-        case ACCESS_GET_PTS_DELAY:
+        case STREAM_GET_PTS_DELAY:
             *va_arg( args, int64_t * ) = INT64_C(1000)
                 * var_InheritInteger(p_access, "network-caching");
             break;
 
-        case ACCESS_SET_PAUSE_STATE:
+        case STREAM_SET_PAUSE_STATE:
             /* Nothing to do */
             break;
 

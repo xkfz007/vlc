@@ -81,7 +81,6 @@ struct vout_thread_sys_t
         char           *title;
         vout_display_t *vd;
         bool           use_dr;
-        picture_t      *filtered;
     } display;
 
     struct {
@@ -118,8 +117,8 @@ struct vout_thread_sys_t
         vlc_mutex_t     lock;
         char            *configuration;
         video_format_t  format;
-        filter_chain_t  *chain_static;
-        filter_chain_t  *chain_interactive;
+        struct filter_chain_t *chain_static;
+        struct filter_chain_t *chain_interactive;
     } filter;
 
     /* */
@@ -146,6 +145,7 @@ void vout_ControlChangeFilters(vout_thread_t *, const char *);
 void vout_ControlChangeSubSources(vout_thread_t *, const char *);
 void vout_ControlChangeSubFilters(vout_thread_t *, const char *);
 void vout_ControlChangeSubMargin(vout_thread_t *, int);
+void vout_ControlChangeViewpoint( vout_thread_t *, const vlc_viewpoint_t *);
 
 /* */
 void vout_IntfInit( vout_thread_t * );

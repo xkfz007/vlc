@@ -19,10 +19,11 @@
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
-#ifndef _VLC_LIBASF_H
-#define _VLC_LIBASF_H
+#ifndef VLC_ASF_LIBASF_H_
+#define VLC_ASF_LIBASF_H_
 
 #define ASF_MAX_STREAMNUMBER 127
+#define ASF_OBJECT_COMMON_SIZE 24
 
 /*****************************************************************************
  * Structure needed for decoder

@@ -137,7 +137,7 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
     if( pp_block == NULL || *pp_block == NULL ) return NULL;
     p_block = *pp_block;
 
-    if( p_block->i_flags & BLOCK_FLAG_DISCONTINUITY )
+    if( p_block->i_flags & BLOCK_FLAG_CORRUPTED )
     {
         block_Release( p_block ); *pp_block = NULL;
         return NULL;
@@ -177,6 +177,8 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
     p_dec->fmt_out.video.i_sar_den = 1;
 
     /* Get a new picture. */
+    if( decoder_UpdateVideoFormat( p_dec ) )
+        goto error;
     p_pic = decoder_NewPicture( p_dec );
     if ( p_pic == NULL ) goto error;
 
@@ -184,15 +186,13 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
     {
         case 8:
         {
-            int i, j;
-            uint8_t *p_src, *p_dst;
-            uint8_t r, g, b;
-            for ( i = 0; i < p_surface->h; i++ )
+            for ( int i = 0; i < p_surface->h; i++ )
             {
-                p_src = (uint8_t*)p_surface->pixels + i * p_surface->pitch;
-                p_dst = p_pic->p[0].p_pixels + i * p_pic->p[0].i_pitch;
-                for ( j = 0; j < p_surface->w; j++ )
+                uint8_t *p_src = (uint8_t*)p_surface->pixels + i * p_surface->pitch;
+                uint8_t *p_dst = p_pic->p[0].p_pixels + i * p_pic->p[0].i_pitch;
+                for ( int j = 0; j < p_surface->w; j++ )
                 {
+                    uint8_t r, g, b;
                     SDL_GetRGB( *(p_src++), p_surface->format,
                                 &r, &g, &b );
                     *(p_dst++) = r;
@@ -204,13 +204,12 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
         }
         case 16:
         {
-            int i;
             uint8_t *p_src = p_surface->pixels;
             uint8_t *p_dst = p_pic->p[0].p_pixels;
             int i_pitch = p_pic->p[0].i_pitch < p_surface->pitch ?
                 p_pic->p[0].i_pitch : p_surface->pitch;
 
-            for ( i = 0; i < p_surface->h; i++ )
+            for ( int i = 0; i < p_surface->h; i++ )
             {
                 memcpy( p_dst, p_src, i_pitch );
                 p_src += p_surface->pitch;
@@ -220,15 +219,13 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
         }
         case 24:
         {
-            int i, j;
-            uint8_t *p_src, *p_dst;
-            uint8_t r, g, b;
-            for ( i = 0; i < p_surface->h; i++ )
+            for ( int i = 0; i < p_surface->h; i++ )
             {
-                p_src = (uint8_t*)p_surface->pixels + i * p_surface->pitch;
-                p_dst = p_pic->p[0].p_pixels + i * p_pic->p[0].i_pitch;
-                for ( j = 0; j < p_surface->w; j++ )
+                uint8_t *p_src = (uint8_t*)p_surface->pixels + i * p_surface->pitch;
+                uint8_t *p_dst = p_pic->p[0].p_pixels + i * p_pic->p[0].i_pitch;
+                for ( int j = 0; j < p_surface->w; j++ )
                 {
+                    uint8_t r, g, b;
                     SDL_GetRGB( *(uint32_t*)p_src, p_surface->format,
                                 &r, &g, &b );
                     *(p_dst++) = r;
@@ -241,15 +238,13 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
         }
         case 32:
         {
-            int i, j;
-            uint8_t *p_src, *p_dst;
-            uint8_t r, g, b, a;
-            for ( i = 0; i < p_surface->h; i++ )
+            for ( int i = 0; i < p_surface->h; i++ )
             {
-                p_src = (uint8_t*)p_surface->pixels + i * p_surface->pitch;
-                p_dst = p_pic->p[0].p_pixels + i * p_pic->p[0].i_pitch;
-                for ( j = 0; j < p_surface->w; j++ )
+                uint8_t *p_src = (uint8_t*)p_surface->pixels + i * p_surface->pitch;
+                uint8_t *p_dst = p_pic->p[0].p_pixels + i * p_pic->p[0].i_pitch;
+                for ( int j = 0; j < p_surface->w; j++ )
                 {
+                    uint8_t r, g, b, a;
                     SDL_GetRGBA( *(uint32_t*)p_src, p_surface->format,
                                 &r, &g, &b, &a );
                     *(p_dst++) = b;

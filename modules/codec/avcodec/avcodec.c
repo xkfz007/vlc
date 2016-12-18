@@ -326,8 +326,6 @@ static int OpenDecoder( vlc_object_t *p_this )
     if( avctx->level != FF_LEVEL_UNKNOWN)
         p_dec->fmt_in.i_level = avctx->level;
 
-    p_dec->b_need_packetized = true;
-
     return VLC_SUCCESS;
 }
 
@@ -338,10 +336,18 @@ static void CloseDecoder( vlc_object_t *p_this )
 {
     decoder_t *p_dec = (decoder_t *)p_this;
 
-    if( p_dec->fmt_out.i_cat == VIDEO_ES )
-        EndVideoDec( p_dec );
-    else
-        ffmpeg_CloseCodec( p_dec );
+    switch( p_dec->fmt_out.i_cat )
+    {
+        case VIDEO_ES:
+            EndVideoDec( p_dec );
+            break;
+        case AUDIO_ES:
+            EndAudioDec( p_dec );
+            break;
+        default:
+            ffmpeg_CloseCodec( p_dec );
+            break;
+    }
 
     decoder_sys_t *p_sys = p_dec->p_sys;
 
@@ -359,9 +365,10 @@ int ffmpeg_OpenCodec( decoder_t *p_dec )
     AVDictionary *options = NULL;
     int ret;
 
-    if (psz_opts && *psz_opts)
+    if (psz_opts) {
         options = vlc_av_get_options(psz_opts);
-    free(psz_opts);
+        free(psz_opts);
+    }
 
     vlc_avcodec_lock();
     ret = avcodec_open2( p_sys->p_context, p_sys->p_codec, options ? &options : NULL );

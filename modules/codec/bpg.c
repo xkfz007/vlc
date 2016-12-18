@@ -96,18 +96,13 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
     BPGImageInfo img_info;
 
     if( !pp_block || !*pp_block )
-    {
         return NULL;
-    }
 
     p_block = *pp_block;
+    *pp_block = NULL;
 
-    if( p_block->i_flags & BLOCK_FLAG_DISCONTINUITY )
-    {
-        block_Release(p_block);
-        *pp_block = NULL;
-        return NULL;
-    }
+    if( p_block->i_flags & BLOCK_FLAG_CORRUPTED )
+        goto error;
 
     /* Decode picture */
 
@@ -137,11 +132,12 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
     p_dec->fmt_out.video.i_visible_height = p_dec->fmt_out.video.i_height = img_info.height;
     p_dec->fmt_out.video.i_sar_num = 1;
     p_dec->fmt_out.video.i_sar_den = 1;
-    p_dec->fmt_out.video.i_rmask = 0x000000ff;
-    p_dec->fmt_out.video.i_gmask = 0x0000ff00;
-    p_dec->fmt_out.video.i_bmask = 0x00ff0000;
 
     /* Get a new picture */
+    if( decoder_UpdateVideoFormat( p_dec ) )
+    {
+        goto error;
+    }
     p_pic = decoder_NewPicture( p_dec );
     if( !p_pic )
     {
@@ -163,15 +159,10 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
     p_pic->date = p_block->i_pts > VLC_TS_INVALID ? p_block->i_pts : p_block->i_dts;
 
     block_Release( p_block );
-    *pp_block = NULL;
-
     return p_pic;
 
 error:
-
     block_Release( p_block );
-    *pp_block = NULL;
-
     return NULL;
 }
 

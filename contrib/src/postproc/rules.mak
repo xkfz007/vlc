@@ -44,6 +44,9 @@ endif
 ifeq ($(ARCH),mipsel)
 POSTPROCCONF += --arch=mips
 endif
+ifeq ($(ARCH),mips64el)
+POSTPROCCONF += --arch=mips64
+endif
 
 # x86 stuff
 ifeq ($(ARCH),i386)
@@ -71,6 +74,12 @@ endif
 # Linux
 ifdef HAVE_LINUX
 POSTPROCCONF += --target-os=linux --enable-pic
+endif
+
+ifdef HAVE_ANDROID
+ifeq ($(ANDROID_ABI), x86)
+POSTPROCCONF +=  --disable-mmx --disable-mmxext
+endif
 endif
 
 # Windows

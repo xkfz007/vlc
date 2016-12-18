@@ -47,19 +47,16 @@ struct access_sys_t
     bool b_seekable; /* Is our archive type seekable ? */
 };
 
-static ssize_t Read(access_t *p_access, uint8_t *p_data, size_t i_size)
+static ssize_t Read(access_t *p_access, void *p_data, size_t i_size)
 {
     access_sys_t *p_sys = p_access->p_sys;
 
-    size_t i_read = 0;
+    ssize_t i_read = 0;
 
     i_read = archive_read_data(p_sys->p_archive, p_data, i_size);
 
-    if (i_read > 0)
-        p_access->info.i_pos += i_read;
-
-    if (i_size > 0 && i_read <= 0)
-        p_access->info.b_eof = true;
+    if (i_read < 0)
+        i_read = 0;
 
     return i_read;
 }
@@ -72,11 +69,7 @@ static int Seek(access_t *p_access, uint64_t i_pos)
         return VLC_EGENERIC;
 
     int64_t i_ret = archive_seek_data(p_sys->p_archive, i_pos, SEEK_SET);
-    if ( i_ret < ARCHIVE_OK )
-        return VLC_EGENERIC;
-    p_access->info.i_pos = i_ret;
-
-    return VLC_SUCCESS;
+    return ( i_ret < ARCHIVE_OK ) ? VLC_EGENERIC : VLC_SUCCESS;
 }
 
 static int FindVolumes(access_t *p_access, struct archive *p_archive, const char *psz_uri,
@@ -122,15 +115,15 @@ static int FindVolumes(access_t *p_access, struct archive *p_archive, const char
                     break;
 
                 /* Probe URI */
-                int i_savedflags = p_access->i_flags;
-                p_access->i_flags |= OBJECT_FLAGS_NOINTERACT;
-                stream_t *p_stream = stream_UrlNew(p_access, psz_newuri);
-                p_access->i_flags = i_savedflags;
+                int i_savedflags = p_access->obj.flags;
+                p_access->obj.flags |= OBJECT_FLAGS_NOINTERACT;
+                stream_t *p_stream = vlc_stream_NewURL(p_access, psz_newuri);
+                p_access->obj.flags = i_savedflags;
                 if (p_stream)
                 {
                     ppsz_files[*pi_files] = psz_newuri;
                     (*pi_files)++;
-                    stream_Delete(p_stream);
+                    vlc_stream_Delete(p_stream);
                 }
                 else
                 {
@@ -157,7 +150,7 @@ static ssize_t ReadCallback(struct archive *p_archive, void *p_object, const voi
     access_sys_t *p_sys = p_data->p_access->p_sys;
 
     *pp_buffer = &p_sys->buffer;
-    return stream_Read(p_sys->p_stream, &p_sys->buffer, ARCHIVE_READ_SIZE);
+    return vlc_stream_Read(p_sys->p_stream, &p_sys->buffer, ARCHIVE_READ_SIZE);
 }
 
 static ssize_t SkipCallback(struct archive *p_archive, void *p_object, ssize_t i_request)
@@ -170,15 +163,15 @@ static ssize_t SkipCallback(struct archive *p_archive, void *p_object, ssize_t i
     /* be smart as small seeks converts to reads */
     if (p_sys->b_source_canseek)
     {
-        int64_t i_pos = stream_Tell(p_sys->p_stream);
+        int64_t i_pos = vlc_stream_Tell(p_sys->p_stream);
         if (i_pos >=0)
-            stream_Seek(p_sys->p_stream, i_pos + i_request);
-        i_skipped = stream_Tell(p_sys->p_stream) - i_pos;
+            vlc_stream_Seek(p_sys->p_stream, i_pos + i_request);
+        i_skipped = vlc_stream_Tell(p_sys->p_stream) - i_pos;
     }
     else while(i_request)
     {
         int i_skip = __MIN(INT32_MAX, i_request);
-        int i_read = stream_Read(p_sys->p_stream, NULL, i_skip);
+        int i_read = vlc_stream_Read(p_sys->p_stream, NULL, i_skip);
         if (i_read > 0)
             i_skipped += i_read;
         else
@@ -200,7 +193,7 @@ static ssize_t SeekCallback(struct archive *p_archive, void *p_object, ssize_t i
     switch(i_whence)
     {
     case SEEK_CUR:
-        i_pos = stream_Tell(p_sys->p_stream);
+        i_pos = vlc_stream_Tell(p_sys->p_stream);
         break;
     case SEEK_SET:
         i_pos = 0;
@@ -215,8 +208,8 @@ static ssize_t SeekCallback(struct archive *p_archive, void *p_object, ssize_t i
     if (i_pos < 0)
         return -1;
 
-    stream_Seek(p_sys->p_stream, i_pos + i_offset); /* We don't care about return val */
-    return stream_Tell(p_sys->p_stream);
+    vlc_stream_Seek(p_sys->p_stream, i_pos + i_offset); /* We don't care about return val */
+    return vlc_stream_Tell(p_sys->p_stream);
 }
 
 static int SwitchCallback(struct archive *p_archive, void *p_object, void *p_object2)
@@ -227,8 +220,8 @@ static int SwitchCallback(struct archive *p_archive, void *p_object, void *p_obj
     access_sys_t *p_sys = p_data->p_access->p_sys;
 
     msg_Dbg(p_data->p_access, "opening next volume %s", p_nextdata->psz_uri);
-    stream_Delete(p_sys->p_stream);
-    p_sys->p_stream = stream_UrlNew(p_nextdata->p_access, p_nextdata->psz_uri);
+    vlc_stream_Delete(p_sys->p_stream);
+    p_sys->p_stream = vlc_stream_NewURL(p_nextdata->p_access, p_nextdata->psz_uri);
     return p_sys->p_stream ? ARCHIVE_OK : ARCHIVE_FATAL;
 }
 
@@ -238,12 +231,13 @@ static int OpenCallback(struct archive *p_archive, void *p_object)
     callback_data_t *p_data = (callback_data_t *) p_object;
     access_sys_t *p_sys = p_data->p_access->p_sys;
 
-    p_sys->p_stream = stream_UrlNew( p_data->p_access, p_data->psz_uri );
+    p_sys->p_stream = vlc_stream_NewURL( p_data->p_access, p_data->psz_uri );
     if(!p_sys->p_stream)
         return ARCHIVE_FATAL;
 
     /* Seek callback must only be set if calls are guaranteed to succeed */
-    stream_Control(p_sys->p_stream, STREAM_CAN_SEEK, &p_sys->b_source_canseek);
+    vlc_stream_Control(p_sys->p_stream, STREAM_CAN_SEEK,
+                       &p_sys->b_source_canseek);
     if(p_sys->b_source_canseek)
         archive_read_set_seek_callback(p_sys->p_archive, SeekCallback);
 
@@ -258,7 +252,7 @@ static int CloseCallback(struct archive *p_archive, void *p_object)
 
     if (p_sys->p_stream)
     {
-        stream_Delete(p_sys->p_stream);
+        vlc_stream_Delete(p_sys->p_stream);
         p_sys->p_stream = NULL;
     }
 
@@ -272,32 +266,32 @@ static int Control(access_t *p_access, int i_query, va_list args)
     switch (i_query)
     {
 
-    case ACCESS_CAN_SEEK:
+    case STREAM_CAN_SEEK:
         *va_arg(args, bool *)= p_sys->b_seekable;
         break;
 
-    case ACCESS_CAN_FASTSEEK:
+    case STREAM_CAN_FASTSEEK:
         if (!p_sys->b_seekable || !p_sys->p_stream)
         {
             *va_arg( args, bool* ) = false;
             break;
         }
         else
-            return stream_vaControl( p_sys->p_stream, i_query, args );
+            return vlc_stream_vaControl( p_sys->p_stream, i_query, args );
 
-    case ACCESS_SET_PAUSE_STATE:
+    case STREAM_SET_PAUSE_STATE:
         break;
 
-    case ACCESS_CAN_PAUSE:
-    case ACCESS_CAN_CONTROL_PACE:
+    case STREAM_CAN_PAUSE:
+    case STREAM_CAN_CONTROL_PACE:
         *va_arg(args, bool *) = true;
         break;
 
-    case ACCESS_GET_SIZE:
+    case STREAM_GET_SIZE:
         *va_arg(args, uint64_t *) = archive_entry_size(p_sys->p_entry);
         break;
 
-    case ACCESS_GET_PTS_DELAY:
+    case STREAM_GET_PTS_DELAY:
         *va_arg(args, int64_t *) = DEFAULT_PTS_DELAY;
         break;
 
@@ -321,7 +315,7 @@ int AccessOpen(vlc_object_t *p_object)
     char *psz_name = psz_base + (sep - p_access->psz_location);
     *(psz_name++) = '\0';
 
-    if (decode_URI(psz_base) == NULL)
+    if (vlc_uri_decode(psz_base) == NULL)
     {
         free(psz_base);
         return VLC_EGENERIC;
@@ -416,8 +410,6 @@ int AccessOpen(vlc_object_t *p_object)
     p_access->pf_block   = NULL; /* libarchive's zerocopy keeps owning block :/ */
     p_access->pf_control = Control;
     p_access->pf_seek    = Seek;
-
-    access_InitFields(p_access);
 
     return VLC_SUCCESS;
 

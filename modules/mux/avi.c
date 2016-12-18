@@ -36,7 +36,7 @@
 #include <vlc_sout.h>
 #include <vlc_block.h>
 #include <vlc_codecs.h>
-#include <vlc_bits.h>
+#include <vlc_boxes.h>
 
 /*****************************************************************************
  * Module descriptor
@@ -367,6 +367,12 @@ static int AddStream( sout_mux_t *p_mux, sout_input_t *p_input )
                     break;
                 case VLC_CODEC_WMAL:
                     p_wf->wFormatTag = WAVE_FORMAT_WMAL;
+                    break;
+                case VLC_CODEC_ALAW:
+                    p_wf->wFormatTag = WAVE_FORMAT_ALAW;
+                    break;
+                case VLC_CODEC_MULAW:
+                    p_wf->wFormatTag = WAVE_FORMAT_MULAW;
                     break;
                     /* raw codec */
                 case VLC_CODEC_U8:

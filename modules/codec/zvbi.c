@@ -62,8 +62,8 @@ static void Close( vlc_object_t * );
 #define PAGE_LONGTEXT N_("Open the indicated Teletext page. " \
         "Default page is index 100")
 
-#define OPAQUE_TEXT N_("Teletext transparency")
-#define OPAQUE_LONGTEXT N_("Setting vbi-opaque to true " \
+#define OPAQUE_TEXT N_("Opacity")
+#define OPAQUE_LONGTEXT N_("Setting to true " \
         "makes the text to be boxed and maybe easier to read." )
 
 #define POS_TEXT N_("Teletext alignment")
@@ -76,10 +76,20 @@ static void Close( vlc_object_t * );
 #define TELX_LONGTEXT N_( "Output teletext subtitles as text " \
   "instead of as RGBA" )
 
+#define LEVEL_TEXT N_("Presentation Level")
+
 static const int pi_pos_values[] = { 0, 1, 2, 4, 8, 5, 6, 9, 10 };
 static const char *const ppsz_pos_descriptions[] =
 { N_("Center"), N_("Left"), N_("Right"), N_("Top"), N_("Bottom"),
   N_("Top-Left"), N_("Top-Right"), N_("Bottom-Left"), N_("Bottom-Right") };
+
+static const int level_values[] = { 0, 1, 2, 3 };
+static const char *const level_descriptions[] =
+{ N_("1"), N_("1.5"), N_("2.5"), N_("3.5") };
+
+/* separate internal and zvbi values, as the latter could change */
+static const int level_zvbi_values[] =
+{ VBI_WST_LEVEL_1, VBI_WST_LEVEL_1p5, VBI_WST_LEVEL_2p5, VBI_WST_LEVEL_3p5 };
 
 vlc_module_begin ()
     set_description( N_("VBI and Teletext decoder") )
@@ -97,6 +107,8 @@ vlc_module_begin ()
         change_integer_list( pi_pos_values, ppsz_pos_descriptions );
     add_bool( "vbi-text", false,
               TELX_TEXT, TELX_LONGTEXT, false )
+    add_integer( "vbi-level", 3, LEVEL_TEXT, NULL, false )
+        change_integer_list( level_values, level_descriptions );
 vlc_module_end ()
 
 /****************************************************************************
@@ -154,6 +166,7 @@ struct decoder_sys_t
     unsigned int      i_wanted_subpage;
     /* */
     bool              b_opaque;
+    unsigned int      i_level;
     struct {
         int pgno, subno;
     }                 nav_link[6];
@@ -178,8 +191,6 @@ static int RequestPage( vlc_object_t *p_this, char const *psz_cmd,
                         vlc_value_t oldval, vlc_value_t newval, void *p_data );
 static int Opaque( vlc_object_t *p_this, char const *psz_cmd,
                    vlc_value_t oldval, vlc_value_t newval, void *p_data );
-static int Position( vlc_object_t *p_this, char const *psz_cmd,
-                     vlc_value_t oldval, vlc_value_t newval, void *p_data );
 static int EventKey( vlc_object_t *p_this, char const *psz_cmd,
                      vlc_value_t oldval, vlc_value_t newval, void *p_data );
 
@@ -250,13 +261,13 @@ static int Open( vlc_object_t *p_this )
     var_AddCallback( p_dec, "vbi-opaque", Opaque, p_sys );
 
     p_sys->i_align = var_CreateGetInteger( p_dec, "vbi-position" );
-    var_AddCallback( p_dec, "vbi-position", Position, p_sys );
 
     p_sys->b_text = var_CreateGetBool( p_dec, "vbi-text" );
-//    var_AddCallback( p_dec, "vbi-text", Text, p_sys );
+
+    p_sys->i_level = var_CreateGetInteger( p_dec, "vbi-level" );
 
     /* Listen for keys */
-    var_AddCallback( p_dec->p_libvlc, "key-pressed", EventKey, p_dec );
+    var_AddCallback( p_dec->obj.libvlc, "key-pressed", EventKey, p_dec );
 
     es_format_Init( &p_dec->fmt_out, SPU_ES, VLC_CODEC_SPU );
     if( p_sys->b_text )
@@ -276,10 +287,9 @@ static void Close( vlc_object_t *p_this )
     decoder_t     *p_dec = (decoder_t*) p_this;
     decoder_sys_t *p_sys = p_dec->p_sys;
 
-    var_DelCallback( p_dec, "vbi-position", Position, p_sys );
     var_DelCallback( p_dec, "vbi-opaque", Opaque, p_sys );
     var_DelCallback( p_dec, "vbi-page", RequestPage, p_sys );
-    var_DelCallback( p_dec->p_libvlc, "key-pressed", EventKey, p_dec );
+    var_DelCallback( p_dec->obj.libvlc, "key-pressed", EventKey, p_dec );
 
     vlc_mutex_destroy( &p_sys->lock );
 
@@ -361,13 +371,14 @@ static subpicture_t *Decode( decoder_t *p_dec, block_t **pp_block )
     const unsigned int i_wanted_page = p_sys->i_wanted_page;
     const unsigned int i_wanted_subpage = p_sys->i_wanted_subpage;
     const bool b_opaque = p_sys->b_opaque;
+    const unsigned int i_level = p_sys->i_level > 3 ? 3 : p_sys->i_level;
     vlc_mutex_unlock( &p_sys->lock );
 
     /* Try to see if the page we want is in the cache yet */
     memset( &p_page, 0, sizeof(vbi_page) );
     b_cached = vbi_fetch_vt_page( p_sys->p_vbi_dec, &p_page,
                                   vbi_dec2bcd( i_wanted_page ),
-                                  i_wanted_subpage, VBI_WST_LEVEL_3p5,
+                                  i_wanted_subpage, level_zvbi_values[i_level],
                                   25, true );
 
     if( i_wanted_page == p_sys->i_last_page && !p_sys->b_update )
@@ -384,7 +395,7 @@ static subpicture_t *Decode( decoder_t *p_dec, block_t **pp_block )
             if( !p_spu )
                 goto error;
             subpicture_updater_sys_t *p_spu_sys = p_spu->updater.p_sys;
-            p_spu_sys->text = strdup("");
+            p_spu_sys->p_segments = text_segment_New("");
 
             p_sys->b_update = true;
             p_sys->i_last_page = i_wanted_page;
@@ -441,11 +452,20 @@ static subpicture_t *Decode( decoder_t *p_dec, block_t **pp_block )
            offset++;
 
         subpicture_updater_sys_t *p_spu_sys = p_spu->updater.p_sys;
-        p_spu_sys->text = strdup( &p_text[offset] );
+        p_spu_sys->p_segments = text_segment_New( &p_text[offset] );
+        if( p_spu_sys->p_segments && b_opaque )
+        {
+            p_spu_sys->p_segments->style = text_style_Create( STYLE_NO_DEFAULTS );
+            if( p_spu_sys->p_segments->style )
+            {
+                /* Set text background */
+                p_spu_sys->p_segments->style->i_style_flags = STYLE_BACKGROUND;
+                p_spu_sys->p_segments->style->i_features |= STYLE_HAS_FLAGS;
+            }
+        }
 
         p_spu_sys->align = i_align;
-        p_spu_sys->i_font_height_percent = 5;
-        p_spu_sys->renderbg = b_opaque;
+        p_spu_sys->noregionbg = true;
 
 #ifdef ZVBI_DEBUG
         msg_Info( p_dec, "page %x-%x(%d)\n\"%s\"", p_page.pgno, p_page.subno, i_total, &p_text[offset] );
@@ -711,19 +731,6 @@ static int Opaque( vlc_object_t *p_this, char const *psz_cmd,
     vlc_mutex_lock( &p_sys->lock );
     p_sys->b_opaque = newval.b_bool;
     p_sys->b_update = true;
-    vlc_mutex_unlock( &p_sys->lock );
-
-    return VLC_SUCCESS;
-}
-
-static int Position( vlc_object_t *p_this, char const *psz_cmd,
-                     vlc_value_t oldval, vlc_value_t newval, void *p_data )
-{
-    decoder_sys_t *p_sys = p_data;
-    VLC_UNUSED(p_this); VLC_UNUSED(psz_cmd); VLC_UNUSED(oldval);
-
-    vlc_mutex_lock( &p_sys->lock );
-    p_sys->i_align = newval.i_int;
     vlc_mutex_unlock( &p_sys->lock );
 
     return VLC_SUCCESS;

@@ -153,9 +153,9 @@ void dvb_close (dvb_device_t *d)
     delete d;
 }
 
-ssize_t dvb_read (dvb_device_t *d, void *buf, size_t len)
+ssize_t dvb_read (dvb_device_t *d, void *buf, size_t len, int ms)
 {
-    return d->module->Pop(buf, len);
+    return d->module->Pop(buf, len, ms);
 }
 
 int dvb_add_pid (dvb_device_t *, uint16_t)
@@ -165,6 +165,11 @@ int dvb_add_pid (dvb_device_t *, uint16_t)
 
 void dvb_remove_pid (dvb_device_t *, uint16_t)
 {
+}
+
+bool dvb_get_pid_state (const dvb_device_t *, uint16_t)
+{
+    return true;
 }
 
 unsigned dvb_enum_systems (dvb_device_t *d)
@@ -191,6 +196,17 @@ int dvb_set_inversion (dvb_device_t *d, int inversion)
 int dvb_tune (dvb_device_t *d)
 {
     return d->module->SubmitTuneRequest ();
+}
+
+int dvb_fill_device_caps( dvb_device_t *, dvb_device_caps_t * )
+{
+
+    return -1;
+}
+
+bool dvb_set_ca_pmt (dvb_device_t *, en50221_capmt_info_t *)
+{
+    return false;
 }
 
 /* DVB-C */
@@ -304,11 +320,14 @@ void BDAOutput::Push( block_t *p_block )
     vlc_cond_signal( &wait );
 }
 
-ssize_t BDAOutput::Pop(void *buf, size_t len)
+ssize_t BDAOutput::Pop(void *buf, size_t len, int ms)
 {
+    if( ms < 0 )
+        ms = 250;
+
     vlc_mutex_locker l( &lock );
 
-    mtime_t i_deadline = mdate() + 250 * 1000;
+    mtime_t i_deadline = mdate() + ms * 1000;
     while( !p_first )
     {
         if( vlc_cond_timedwait( &wait, &lock, i_deadline ) )
@@ -402,15 +421,15 @@ unsigned BDAGraph::GetSystem( REFCLSID clsid )
     unsigned sys = 0;
 
     if( clsid == CLSID_DVBTNetworkProvider )
-        sys = DVB_T;
+        sys = DTV_DELIVERY_DVB_T;
     if( clsid == CLSID_DVBCNetworkProvider )
-        sys = DVB_C;
+        sys = DTV_DELIVERY_DVB_C;
     if( clsid == CLSID_DVBSNetworkProvider )
-        sys = DVB_S;
+        sys = DTV_DELIVERY_DVB_S;
     if( clsid == CLSID_ATSCNetworkProvider )
-        sys = ATSC;
+        sys = DTV_DELIVERY_ATSC;
     if( clsid == CLSID_DigitalCableNetworkType )
-        sys = CQAM;
+        sys = DTV_DELIVERY_CQAM;
 
     return sys;
 }
@@ -1310,7 +1329,7 @@ int BDAGraph::SetInversion(int inversion)
      * in access.c. Since DVBT and DVBC don't support spectral
      * inversion, we need to return VLC_SUCCESS in those cases
      * so that dvb_tune() will be called */
-    if( ( GetSystem( guid_network_type ) & ( DVB_S | DVB_S2 | ISDB_S ) ) == 0 )
+    if( ( GetSystem( guid_network_type ) & ( DTV_DELIVERY_DVB_S | DTV_DELIVERY_DVB_S2 | DTV_DELIVERY_ISDB_S ) ) == 0 )
     {
         msg_Dbg( p_access, "SetInversion: Not Satellite type" );
         return VLC_SUCCESS;
@@ -3010,9 +3029,9 @@ HRESULT BDAGraph::Start()
 /*****************************************************************************
 * Pop the stream of data
 *****************************************************************************/
-ssize_t BDAGraph::Pop(void *buf, size_t len)
+ssize_t BDAGraph::Pop(void *buf, size_t len, int ms)
 {
-    return output.Pop(buf, len);
+    return output.Pop(buf, len, ms);
 }
 
 /******************************************************************************

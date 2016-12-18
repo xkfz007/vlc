@@ -26,8 +26,36 @@
 #ifndef LIBVLC_FIXUPS_H
 # define LIBVLC_FIXUPS_H 1
 
-#if !defined (HAVE_GMTIME_R) || !defined (HAVE_LOCALTIME_R)
+/* needed to detect uClibc */
+#ifdef HAVE_FEATURES_H
+#include <features.h>
+#endif
+
+/* C++11 says there's no need to define __STDC_*_MACROS when including
+ * inttypes.h and stdint.h. */
+#if defined (__cplusplus) && (defined(__MINGW32__) || defined(__UCLIBC__))
+# ifndef __STDC_FORMAT_MACROS
+#  define __STDC_FORMAT_MACROS 1
+# endif
+# ifndef __STDC_CONSTANT_MACROS
+#  define __STDC_CONSTANT_MACROS 1
+# endif
+# ifndef __STDC_LIMIT_MACROS
+#  define __STDC_LIMIT_MACROS 1
+# endif
+#endif
+
+#if !defined (HAVE_GMTIME_R) || !defined (HAVE_LOCALTIME_R) \
+ || !defined (HAVE_TIMEGM)
 # include <time.h> /* time_t */
+#endif
+
+#ifndef HAVE_GETTIMEOFDAY
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <sys/time.h>
+#endif
 #endif
 
 #ifndef HAVE_LLDIV
@@ -49,9 +77,11 @@ typedef struct
 #endif
 
 #if !defined (HAVE_POSIX_MEMALIGN) || \
+    !defined (HAVE_MEMRCHR) || \
     !defined (HAVE_STRLCPY) || \
     !defined (HAVE_STRNDUP) || \
-    !defined (HAVE_STRNLEN)
+    !defined (HAVE_STRNLEN) || \
+    !defined (HAVE_STRNSTR)
 # include <stddef.h> /* size_t */
 #endif
 
@@ -77,6 +107,14 @@ extern "C" {
 # define VLC_NOTHROW
 #endif
 
+/* stddef.h */
+#if !defined (__cplusplus) && !defined (HAVE_MAX_ALIGN_T)
+typedef struct {
+  long long ll;
+  long double ld;
+} max_align_t;
+#endif
+
 /* stdio.h */
 #ifndef HAVE_ASPRINTF
 int asprintf (char **, const char *, ...);
@@ -84,7 +122,6 @@ int asprintf (char **, const char *, ...);
 
 #ifndef HAVE_FLOCKFILE
 void flockfile (FILE *);
-int ftrylockfile (FILE *);
 void funlockfile (FILE *);
 int getc_unlocked (FILE *);
 int getchar_unlocked (void);
@@ -106,6 +143,14 @@ int vasprintf (char **, const char *, va_list);
 #endif
 
 /* string.h */
+#ifndef HAVE_FFSLL
+int ffsll(unsigned long long);
+#endif
+
+#ifndef HAVE_MEMRCHR
+void *memrchr(const void *, int, size_t);
+#endif
+
 #ifndef HAVE_STRCASECMP
 int strcasecmp (const char *, const char *);
 #endif
@@ -124,6 +169,10 @@ int strverscmp (const char *, const char *);
 
 #ifndef HAVE_STRNLEN
 size_t strnlen (const char *, size_t);
+#endif
+
+#ifndef HAVE_STRNSTR
+char * strnstr (const char *, const char *, size_t);
 #endif
 
 #ifndef HAVE_STRNDUP
@@ -174,6 +223,22 @@ struct tm *gmtime_r (const time_t *, struct tm *);
 
 #ifndef HAVE_LOCALTIME_R
 struct tm *localtime_r (const time_t *, struct tm *);
+#endif
+
+#ifndef HAVE_TIMEGM
+time_t timegm(struct tm *);
+#endif
+
+#ifndef HAVE_TIMESPEC_GET
+#define TIME_UTC 1
+struct timespec;
+int timespec_get(struct timespec *, int);
+#endif
+
+/* sys/time.h */
+#ifndef HAVE_GETTIMEOFDAY
+struct timezone;
+int gettimeofday(struct timeval *, struct timezone *);
 #endif
 
 /* unistd.h */
@@ -240,7 +305,9 @@ static inline locale_t newlocale(int mask, const char * locale, locale_t base)
 #endif
 
 #if !defined (HAVE_STATIC_ASSERT) && !defined(__cpp_static_assert)
-# define _Static_assert(x, s) ((void) sizeof (struct { unsigned:-!(x); }))
+# define STATIC_ASSERT_CONCAT_(a, b) a##b
+# define STATIC_ASSERT_CONCAT(a, b) STATIC_ASSERT_CONCAT_(a, b)
+# define _Static_assert(x, s) extern char STATIC_ASSERT_CONCAT(static_assert_, __LINE__)[sizeof(struct { unsigned:-!(x); })]
 # define static_assert _Static_assert
 #endif
 
@@ -266,8 +333,13 @@ void swab (const void *, void *, ssize_t);
 
 /* Socket stuff */
 #ifndef HAVE_INET_PTON
+# ifndef _WIN32
+#  include <sys/socket.h>
+#else
+typedef int socklen_t;
+# endif
 int inet_pton(int, const char *, void *);
-const char *inet_ntop(int, const void *, char *, int);
+const char *inet_ntop(int, const void *, char *, socklen_t);
 #endif
 
 #ifndef HAVE_STRUCT_POLLFD
@@ -311,6 +383,42 @@ struct if_nameindex
 # define if_freenameindex(list) (void)0
 #endif
 
+#ifndef HAVE_STRUCT_TIMESPEC
+struct timespec {
+    time_t  tv_sec;   /* Seconds */
+    long    tv_nsec;  /* Nanoseconds */
+};
+#endif
+
+#ifdef _WIN32
+struct iovec
+{
+    void  *iov_base;
+    size_t iov_len;
+};
+#define IOV_MAX 255
+struct msghdr
+{
+    void         *msg_name;
+    size_t        msg_namelen;
+    struct iovec *msg_iov;
+    size_t        msg_iovlen;
+    void         *msg_control;
+    size_t        msg_controllen;
+    int           msg_flags;
+};
+#endif
+
+#ifndef HAVE_RECVMSG
+struct msghdr;
+ssize_t recvmsg(int, struct msghdr *, int);
+#endif
+
+#ifndef HAVE_SENDMSG
+struct msghdr;
+ssize_t sendmsg(int, const struct msghdr *, int);
+#endif
+
 /* search.h */
 #ifndef HAVE_SEARCH_H
 typedef struct entry {
@@ -336,6 +444,7 @@ void twalk( const void *root, void(*action)(const void *nodep, VISIT which, int 
 void tdestroy( void *root, void (*free_node)(void *nodep) );
 #else // HAVE_SEARCH_H
 # ifndef HAVE_TDESTROY
+void vlc_tdestroy( void *, void (*)(void *) );
 #  define tdestroy vlc_tdestroy
 # endif
 #endif
@@ -345,10 +454,6 @@ void tdestroy( void *root, void (*free_node)(void *nodep) );
 double erand48 (unsigned short subi[3]);
 long jrand48 (unsigned short subi[3]);
 long nrand48 (unsigned short subi[3]);
-#endif
-
-#ifdef __cplusplus
-} /* extern "C" */
 #endif
 
 #ifdef __OS2__
@@ -365,6 +470,13 @@ struct addrinfo
     char *ai_canonname;
     struct addrinfo *ai_next;
 };
+
+void freeaddrinfo (struct addrinfo *res);
+
+# include <errno.h>
+# ifndef EPROTO
+#  define EPROTO (ELAST + 1)
+# endif
 #endif
 
 /* math.h */
@@ -373,8 +485,30 @@ struct addrinfo
 #define nanf(tagp) NAN
 #endif
 
+#ifndef HAVE_SINCOS
+void sincos(double, double *, double *);
+void sincosf(float, float *, float *);
+#endif
+
+#ifndef HAVE_REALPATH
+char *realpath(const char * restrict pathname, char * restrict resolved_path);
+#endif
+
 #ifdef _WIN32
 FILE *vlc_win32_tmpfile(void);
+#endif
+
+/* mingw-w64 has a broken IN6_IS_ADDR_MULTICAST macro */
+#if defined(_WIN32) && defined(__MINGW64_VERSION_MAJOR)
+# define IN6_IS_ADDR_MULTICAST IN6_IS_ADDR_MULTICAST
+#endif
+
+#ifdef __APPLE__
+# define fdatasync fsync
+#endif
+
+#ifdef __cplusplus
+} /* extern "C" */
 #endif
 
 #endif /* !LIBVLC_FIXUPS_H */

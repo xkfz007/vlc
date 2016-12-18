@@ -108,9 +108,9 @@ struct decoder_sys_t
     HANDLE bcm_handle;       /* Device Handle */
 
     uint8_t *p_sps_pps_buf;  /* SPS/PPS buffer */
-    uint32_t i_sps_pps_size; /* SPS/PPS size */
+    size_t   i_sps_pps_size; /* SPS/PPS size */
 
-    uint32_t i_nal_size;     /* NAL header size */
+    uint8_t i_nal_size;     /* NAL header size */
 
     /* Callback */
     picture_t       *p_pic;
@@ -193,14 +193,14 @@ static int OpenDecoder( vlc_object_t *p_this )
 #ifdef USE_DL_OPENING
 #  define DLL_NAME "bcmDIL.dll"
 #  define PATHS_NB 3
-    static const char *psz_paths[PATHS_NB] = {
-    DLL_NAME,
-    "C:\\Program Files\\Broadcom\\Broadcom CrystalHD Decoder\\" DLL_NAME,
-    "C:\\Program Files (x86)\\Broadcom\\Broadcom CrystalHD Decoder\\" DLL_NAME,
+    static const TCHAR *psz_paths[PATHS_NB] = {
+        TEXT(DLL_NAME),
+        TEXT("C:\\Program Files\\Broadcom\\Broadcom CrystalHD Decoder\\" DLL_NAME),
+        TEXT("C:\\Program Files (x86)\\Broadcom\\Broadcom CrystalHD Decoder\\" DLL_NAME),
     };
     for( int i = 0; i < PATHS_NB; i++ )
     {
-        HINSTANCE p_bcm_dll = LoadLibraryA( psz_paths[i] );
+        HINSTANCE p_bcm_dll = LoadLibrary( psz_paths[i] );
         if( p_bcm_dll )
         {
             p_sys->p_bcm_dll = p_bcm_dll;
@@ -348,7 +348,6 @@ static int OpenDecoder( vlc_object_t *p_this )
     p_dec->fmt_out.i_codec        = VLC_CODEC_YUYV;
     p_dec->fmt_out.video.i_width  = p_dec->fmt_in.video.i_width;
     p_dec->fmt_out.video.i_height = p_dec->fmt_in.video.i_height;
-    p_dec->b_need_packetized      = true;
 
     /* Set callbacks */
     p_dec->pf_decode_video = DecodeBlock;
@@ -401,7 +400,10 @@ static BC_STATUS ourCallback(void *shnd, uint32_t width, uint32_t height, uint32
     /* Do not allocate for the second-field in the pair, in interlaced */
     if( !(proc_in->PicInfo.flags & VDEC_FLAG_INTERLACED_SRC) ||
         !(proc_in->PicInfo.flags & VDEC_FLAG_FIELDPAIR) )
-        p_dec->p_sys->p_pic = decoder_NewPicture( p_dec );
+    {
+        if( !decoder_UpdateVideoFormat( p_dec ) )
+            p_dec->p_sys->p_pic = decoder_NewPicture( p_dec );
+    }
 
     /* */
     picture_t *p_pic = p_dec->p_sys->p_pic;
@@ -432,7 +434,7 @@ static BC_STATUS ourCallback(void *shnd, uint32_t width, uint32_t height, uint32
 static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
-    block_t *p_block;
+    block_t *p_block = NULL;
 
     BC_DTS_PROC_OUT proc_out;
     BC_DTS_STATUS driver_stat;
@@ -441,13 +443,14 @@ static picture_t *DecodeBlock( decoder_t *p_dec, block_t **pp_block )
     if( BC_FUNC_PSYS(DtsGetDriverStatus)( p_sys->bcm_handle, &driver_stat ) != BC_STS_SUCCESS )
         return NULL;
 
-    p_block = *pp_block;
+    if( pp_block )
+        p_block = *pp_block;
+
     if( p_block )
     {
-        if( ( p_block->i_flags&(BLOCK_FLAG_DISCONTINUITY|BLOCK_FLAG_CORRUPTED) ) == 0 )
+        if( ( p_block->i_flags & (BLOCK_FLAG_CORRUPTED) ) == 0 )
         {
             /* Valid input block, so we can send to HW to decode */
-
             BC_STATUS status = BC_FUNC_PSYS(DtsProcInput)( p_sys->bcm_handle,
                                             p_block->p_buffer,
                                             p_block->i_buffer,
@@ -609,22 +612,11 @@ static int crystal_insert_sps_pps( decoder_t *p_dec,
                                    uint32_t i_buf_size)
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
-    int ret;
 
     p_sys->i_sps_pps_size = 0;
+    p_sys->p_sps_pps_buf = h264_avcC_to_AnnexB_NAL( p_buf, i_buf_size,
+                           &p_sys->i_sps_pps_size, &p_sys->i_nal_size );
 
-    p_sys->p_sps_pps_buf = malloc( p_dec->fmt_in.i_extra * 2 );
-    if( !p_sys->p_sps_pps_buf )
-        return VLC_ENOMEM;
-
-    ret = convert_sps_pps( p_dec, p_buf, i_buf_size, p_sys->p_sps_pps_buf,
-                           p_dec->fmt_in.i_extra * 2, &p_sys->i_sps_pps_size,
-                           &p_sys->i_nal_size );
-    if( !ret )
-        return ret;
-
-    free( p_sys->p_sps_pps_buf );
-    p_sys->p_sps_pps_buf = NULL;
-    return ret;
+    return (p_sys->p_sps_pps_buf) ? VLC_SUCCESS : VLC_EGENERIC;
 }
 

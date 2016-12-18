@@ -17,12 +17,12 @@
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
-#ifndef _TSUTIL_H
-#define _TSUTIL_H 1
+#ifndef VLC_MPEG_TSUTIL_H_
+#define VLC_MPEG_TSUTIL_H_
 
 typedef void(*PEStoTSCallback)(void *, block_t *);
 
 void PEStoTS( void *p_opaque, PEStoTSCallback pf_callback, block_t *p_pes,
-              int i_pid, bool *pb_discontinuity, int *pi_continuity_counter );
+              uint16_t i_pid, bool *pb_discontinuity, uint8_t *pi_continuity_counter );
 
 #endif

@@ -53,7 +53,7 @@ public:
     void onUpdateCurrent( bool b_active );
 
     /// Function called to notify playlist item append
-    void onAppend( playlist_add_t * );
+    void onAppend( int );
 
     /// Function called to notify playlist item delete
     void onDelete( int );
@@ -62,14 +62,14 @@ public:
     void onUpdateSlider();
 
     ///
-    void insertItems( VarTree& item, const list<string>& files, bool start );
+    void insertItems( VarTree& item, const std::list<std::string>& files, bool start );
 
 private:
     /// VLC playlist object
     playlist_t *m_pPlaylist;
 
     ///
-    map< int, VarTree* > m_allItems;
+    std::map< int, VarTree* > m_allItems;
 
     /// Build the list from the VLC playlist
     void buildTree();

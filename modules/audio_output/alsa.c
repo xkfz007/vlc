@@ -158,6 +158,7 @@ static const uint16_t vlc_chans[] = {
     [SND_CHMAP_SR]   = AOUT_CHAN_MIDDLERIGHT,
     [SND_CHMAP_RC]   = AOUT_CHAN_REARCENTER,
 };
+static_assert(AOUT_CHAN_MAX == 9, "Missing channel entries");
 
 static int Map2Mask (vlc_object_t *obj, const snd_pcm_chmap_t *restrict map)
 {
@@ -286,6 +287,9 @@ static int Start (audio_output_t *aout, audio_sample_format_t *restrict fmt)
     snd_pcm_format_t pcm_format; /* ALSA sample format */
     bool spdif = false;
 
+    if (aout_FormatNbChannels(fmt) == 0)
+        return VLC_EGENERIC;
+
     switch (fmt->i_format)
     {
         case VLC_CODEC_FL64:
@@ -330,7 +334,7 @@ static int Start (audio_output_t *aout, audio_sample_format_t *restrict fmt)
     char sep = '\0';
     if (spdif)
     {
-        const char *opt;
+        const char *opt = NULL;
 
         if (!strcmp (device, "default"))
             device = "iec958"; /* TODO: hdmi */
@@ -386,9 +390,9 @@ static int Start (audio_output_t *aout, audio_sample_format_t *restrict fmt)
     {
         msg_Err (aout, "cannot open ALSA device \"%s\": %s", device,
                  snd_strerror (val));
-        dialog_Fatal (aout, _("Audio output failed"),
-                      _("The audio device \"%s\" could not be used:\n%s."),
-                      sys->device, snd_strerror (val));
+        vlc_dialog_display_error (aout, _("Audio output failed"),
+            _("The audio device \"%s\" could not be used:\n%s."),
+            sys->device, snd_strerror (val));
         free (devbuf);
         return VLC_EGENERIC;
     }
@@ -495,6 +499,15 @@ static int Start (audio_output_t *aout, audio_sample_format_t *restrict fmt)
     }
     sys->rate = fmt->i_rate;
 
+#if 1 /* work-around for period-long latency outputs (e.g. PulseAudio): */
+    param = AOUT_MIN_PREPARE_TIME;
+    val = snd_pcm_hw_params_set_period_time_near (pcm, hw, &param, NULL);
+    if (val)
+    {
+        msg_Err (aout, "cannot set period: %s", snd_strerror (val));
+        goto error;
+    }
+#endif
     /* Set buffer size */
     param = AOUT_MAX_ADVANCE_TIME;
     val = snd_pcm_hw_params_set_buffer_time_near (pcm, hw, &param, NULL);
@@ -503,14 +516,22 @@ static int Start (audio_output_t *aout, audio_sample_format_t *restrict fmt)
         msg_Err (aout, "cannot set buffer duration: %s", snd_strerror (val));
         goto error;
     }
-
-    param = AOUT_MIN_PREPARE_TIME;
+#if 0
+    val = snd_pcm_hw_params_get_buffer_time (hw, &param, NULL);
+    if (val)
+    {
+        msg_Warn (aout, "cannot get buffer time: %s", snd_strerror(val));
+        param = AOUT_MIN_PREPARE_TIME;
+    }
+    else
+        param /= 2;
     val = snd_pcm_hw_params_set_period_time_near (pcm, hw, &param, NULL);
     if (val)
     {
         msg_Err (aout, "cannot set period: %s", snd_strerror (val));
         goto error;
     }
+#endif
 
     /* Commit hardware parameters */
     val = snd_pcm_hw_params (pcm, hw);
@@ -709,6 +730,7 @@ static int EnumDevices(vlc_object_t *obj, char const *varname,
 
     char **ids = NULL, **names = NULL;
     unsigned n = 0;
+    bool hinted_default = false;
 
     for (size_t i = 0; hints[i] != NULL; i++)
     {
@@ -719,9 +741,10 @@ static int EnumDevices(vlc_object_t *obj, char const *varname,
             continue;
 
         char *desc = snd_device_name_get_hint(hint, "DESC");
-        if (desc != NULL)
-            for (char *lf = strchr(desc, '\n'); lf; lf = strchr(lf, '\n'))
-                 *lf = ' ';
+        if (desc == NULL)
+            desc = xstrdup (name);
+        for (char *lf = strchr(desc, '\n'); lf; lf = strchr(lf, '\n'))
+            *lf = ' ';
         msg_Dbg (obj, "%s (%s)", (desc != NULL) ? desc : name, name);
 
         ids = xrealloc (ids, (n + 1) * sizeof (*ids));
@@ -729,9 +752,22 @@ static int EnumDevices(vlc_object_t *obj, char const *varname,
         ids[n] = name;
         names[n] = desc;
         n++;
+
+        if (!strcmp(name, "default"))
+            hinted_default = true;
     }
 
     snd_device_name_free_hint(hints);
+
+    if (!hinted_default)
+    {
+        ids = xrealloc (ids, (n + 1) * sizeof (*ids));
+        names = xrealloc (names, (n + 1) * sizeof (*names));
+        ids[n] = xstrdup ("default");
+        names[n] = xstrdup (_("Default"));
+        n++;
+    }
+
     *idp = ids;
     *namep = names;
     (void) varname;

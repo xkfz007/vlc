@@ -24,6 +24,7 @@
 #include <assert.h>
 #include <vlc_demux.h>
 #include <vlc_memory.h>
+#include "timestamps.h"
 
 /* 256-0xC0 for normal stream, 256 for 0xbd stream, 256 for 0xfd stream, 8 for 0xa0 AOB stream */
 #define PS_TK_COUNT (256+256+256+8 - 0xc0)
@@ -368,12 +369,14 @@ static inline int ps_pkt_parse_pack( block_t *p_pkt, int64_t *pi_scr,
     uint8_t *p = p_pkt->p_buffer;
     if( p_pkt->i_buffer >= 14 && (p[4] >> 6) == 0x01 )
     {
-        *pi_scr = FROM_SCALE_NZ( ExtractMPEG1PESTimestamp( &p[4] ) );
+        *pi_scr = FROM_SCALE_NZ( ExtractPackHeaderTimestamp( &p[4] ) );
         *pi_mux_rate = ( p[10] << 14 )|( p[11] << 6 )|( p[12] >> 2);
     }
-    else if( p_pkt->i_buffer >= 12 && (p[4] >> 4) == 0x02 )
+    else if( p_pkt->i_buffer >= 12 && (p[4] >> 4) == 0x02 ) /* MPEG-1 Pack SCR, same bits as PES/PTS */
     {
-        *pi_scr = FROM_SCALE_NZ( ExtractPESTimestamp( &p[4] ) );
+        if(!ExtractPESTimestamp( &p[4], 0x02, pi_scr ))
+            return VLC_EGENERIC;
+        *pi_scr = FROM_SCALE_NZ( *pi_scr );
         *pi_mux_rate = ( ( p[9]&0x7f )<< 15 )|( p[10] << 7 )|( p[11] >> 1);
     }
     else
@@ -422,10 +425,14 @@ static inline int ps_pkt_parse_pes( vlc_object_t *p_object, block_t *p_pes, int 
     mtime_t i_pts = -1;
     mtime_t i_dts = -1;
     uint8_t i_stream_id = 0;
+    bool b_pes_scrambling = false;
 
     if( ParsePESHeader( p_object, p_pes->p_buffer, p_pes->i_buffer,
-                        &i_skip, &i_dts, &i_pts, &i_stream_id ) != VLC_SUCCESS )
+                        &i_skip, &i_dts, &i_pts, &i_stream_id, &b_pes_scrambling ) != VLC_SUCCESS )
         return VLC_EGENERIC;
+
+    if( b_pes_scrambling )
+        p_pes->i_flags |= BLOCK_FLAG_SCRAMBLED;
 
     if( i_skip_extra >= 0 )
         i_skip += i_skip_extra;

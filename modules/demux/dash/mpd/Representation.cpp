@@ -31,14 +31,13 @@
 #include "AdaptationSet.h"
 #include "MPD.h"
 #include "TrickModeType.h"
-#include "../adaptative/playlist/SegmentTemplate.h"
-#include "../adaptative/playlist/SegmentTimeline.h"
+#include "../adaptive/playlist/SegmentTemplate.h"
+#include "../adaptive/playlist/SegmentTimeline.h"
 
 using namespace dash::mpd;
 
-Representation::Representation  ( AdaptationSet *set, MPD *mpd_ ) :
-                BaseRepresentation( set, mpd_ ),
-                mpd             ( mpd_ ),
+Representation::Representation  ( AdaptationSet *set ) :
+                BaseRepresentation( set ),
                 qualityRanking  ( -1 ),
                 trickModeType   ( NULL )
 {
@@ -47,6 +46,14 @@ Representation::Representation  ( AdaptationSet *set, MPD *mpd_ ) :
 Representation::~Representation ()
 {
     delete(this->trickModeType);
+}
+
+StreamFormat Representation::getStreamFormat() const
+{
+    if(getMimeType().empty())
+        return MPD::mimeToFormat(adaptationSet->getMimeType());
+    else
+        return MPD::mimeToFormat(getMimeType());
 }
 
 TrickModeType*      Representation::getTrickModeType        () const
@@ -81,7 +88,7 @@ void Representation::addDependency(const Representation *dep)
         this->dependencies.push_back( dep );
 }
 
-std::string Representation::contextualize(size_t index, const std::string &component,
+std::string Representation::contextualize(size_t number, const std::string &component,
                                           const BaseSegmentTemplate *basetempl) const
 {
     std::string ret(component);
@@ -95,7 +102,8 @@ std::string Representation::contextualize(size_t index, const std::string &compo
         if(pos != std::string::npos)
         {
             std::stringstream ss;
-            ss << getScaledTimeBySegmentNumber(index, templ);
+            ss.imbue(std::locale("C"));
+            ss << getScaledTimeBySegmentNumber(number, templ);
             ret.replace(pos, std::string("$Time$").length(), ss.str());
         }
 
@@ -103,7 +111,8 @@ std::string Representation::contextualize(size_t index, const std::string &compo
         if(pos != std::string::npos)
         {
             std::stringstream ss;
-            ss << getSegmentNumber(index, templ);
+            ss.imbue(std::locale("C"));
+            ss << number;
             ret.replace(pos, std::string("$Number$").length(), ss.str());
         }
         else
@@ -117,6 +126,7 @@ std::string Representation::contextualize(size_t index, const std::string &compo
                 if(fmtend != std::string::npos)
                 {
                     std::istringstream iss(ret.substr(fmtstart, fmtend - fmtstart + 1));
+                    iss.imbue(std::locale("C"));
                     try
                     {
                         size_t width;
@@ -124,9 +134,10 @@ std::string Representation::contextualize(size_t index, const std::string &compo
                         if (iss.peek() != '$' && iss.peek() != 'd')
                             throw VLC_EGENERIC;
                         std::stringstream oss;
+                        oss.imbue(std::locale("C"));
                         oss.width(width); /* set format string length */
                         oss.fill('0');
-                        oss << getSegmentNumber(index, templ);
+                        oss << number;
                         ret.replace(pos, fmtend - pos + 1, oss.str());
                     } catch(int) {}
                 }
@@ -138,22 +149,19 @@ std::string Representation::contextualize(size_t index, const std::string &compo
     if(pos != std::string::npos)
     {
         std::stringstream ss;
+        ss.imbue(std::locale("C"));
         ss << getBandwidth();
         ret.replace(pos, std::string("$Bandwidth$").length(), ss.str());
     }
 
     pos = ret.find("$RepresentationID$");
     if(pos != std::string::npos)
-    {
-        std::stringstream ss;
-        ss << getId();
-        ret.replace(pos, std::string("$RepresentationID$").length(), ss.str());
-    }
+        ret.replace(pos, std::string("$RepresentationID$").length(), id.str());
 
     return ret;
 }
 
-mtime_t Representation::getScaledTimeBySegmentNumber(size_t index, const MediaSegmentTemplate *templ) const
+mtime_t Representation::getScaledTimeBySegmentNumber(uint64_t index, const MediaSegmentTemplate *templ) const
 {
     mtime_t time = 0;
     if(templ->segmentTimeline.Get())
@@ -167,26 +175,3 @@ mtime_t Representation::getScaledTimeBySegmentNumber(size_t index, const MediaSe
     return time;
 }
 
-size_t Representation::getSegmentNumber(size_t index, const MediaSegmentTemplate *templ) const
-{
-    index += templ->startNumber.Get();
-    /* live streams / templated */
-    if(getPlaylist()->isLive())
-    {
-        if(templ->segmentTimeline.Get())
-        {
-            // do nothing ?
-        }
-        else if(templ->duration.Get())
-        {
-            mtime_t playbackstart = getPlaylist()->playbackStart.Get();
-            mtime_t streamstart = getPlaylist()->availabilityStartTime.Get();
-            streamstart += getPeriodStart();
-            mtime_t duration = templ->duration.Get();
-            uint64_t timescale = templ->inheritTimescale();
-            if(duration && timescale)
-                index += (playbackstart - streamstart) * timescale / duration;
-        }
-    }
-    return index;
-}

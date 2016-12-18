@@ -64,6 +64,15 @@ static int var_Copy (vlc_object_t *src, const char *name, vlc_value_t prev,
     return var_Set (dst, name, value);
 }
 
+static int var_CopyDevice (vlc_object_t *src, const char *name,
+                           vlc_value_t prev, vlc_value_t value, void *data)
+{
+    vlc_object_t *dst = data;
+
+    (void) src; (void) name; (void) prev;
+    return var_Set (dst, "audio-device", value);
+}
+
 /**
  * Supply or update the current custom ("hardware") volume.
  * @note This only makes sense after calling aout_VolumeHardInit().
@@ -86,7 +95,7 @@ static void aout_MuteNotify (audio_output_t *aout, bool mute)
 
 static void aout_PolicyNotify (audio_output_t *aout, bool cork)
 {
-    (cork ? var_IncInteger : var_DecInteger) (aout->p_parent, "corks");
+    (cork ? var_IncInteger : var_DecInteger) (aout->obj.parent, "corks");
 }
 
 static void aout_DeviceNotify (audio_output_t *aout, const char *id)
@@ -192,6 +201,7 @@ audio_output_t *aout_New (vlc_object_t *parent)
     var_Create (aout, "mute", VLC_VAR_BOOL | VLC_VAR_DOINHERIT);
     var_AddCallback (aout, "mute", var_Copy, parent);
     var_Create (aout, "device", VLC_VAR_STRING);
+    var_AddCallback (aout, "device", var_CopyDevice, parent);
 
     aout->event.volume_report = aout_VolumeNotify;
     aout->event.mute_report = aout_MuteNotify;
@@ -222,7 +232,7 @@ audio_output_t *aout_New (vlc_object_t *parent)
     char *str;
 
     /* Visualizations */
-    var_Create (aout, "visual", VLC_VAR_STRING | VLC_VAR_HASCHOICE);
+    var_Create (aout, "visual", VLC_VAR_STRING);
     text.psz_string = _("Visualizations");
     var_Change (aout, "visual", VLC_VAR_SETTEXT, &text, NULL);
     val.psz_string = (char *)"";
@@ -294,7 +304,7 @@ audio_output_t *aout_New (vlc_object_t *parent)
     if (likely(cfg != NULL))
         for (unsigned i = 0; i < cfg->list_count; i++)
         {
-            val.psz_string = cfg->list.psz[i];
+            val.psz_string = (char *)cfg->list.psz[i];
             text.psz_string = vlc_gettext(cfg->list_text[i]);
             var_Change (aout, "audio-replay-gain-mode", VLC_VAR_ADDCHOICE,
                             &val, &text);
@@ -324,9 +334,10 @@ void aout_Destroy (audio_output_t *aout)
     aout_OutputUnlock (aout);
 
     var_DelCallback (aout, "audio-filter", FilterCallback, NULL);
-    var_DelCallback (aout, "mute", var_Copy, aout->p_parent);
+    var_DelCallback (aout, "device", var_CopyDevice, aout->obj.parent);
+    var_DelCallback (aout, "mute", var_Copy, aout->obj.parent);
     var_SetFloat (aout, "volume", -1.f);
-    var_DelCallback (aout, "volume", var_Copy, aout->p_parent);
+    var_DelCallback (aout, "volume", var_Copy, aout->obj.parent);
     vlc_object_release (aout);
 }
 
@@ -374,16 +385,6 @@ int aout_OutputNew (audio_output_t *aout, audio_sample_format_t *restrict fmt)
     {
         msg_Err (aout, "module not functional");
         return -1;
-    }
-
-    if (!var_Type (aout, "stereo-mode"))
-    {
-        var_Create (aout, "stereo-mode",
-                    VLC_VAR_INTEGER | VLC_VAR_HASCHOICE | VLC_VAR_DOINHERIT);
-
-        vlc_value_t txt;
-        txt.psz_string = _("Stereo audio mode");
-        var_Change (aout, "stereo-mode", VLC_VAR_SETTEXT, &txt, NULL);
     }
 
     /* The user may have selected a different channels configuration. */
@@ -444,13 +445,14 @@ int aout_OutputNew (audio_output_t *aout, audio_sample_format_t *restrict fmt)
     }
 
     aout_FormatPrepare (fmt);
+    assert (fmt->i_bytes_per_frame > 0 && fmt->i_frame_length > 0);
     aout_FormatPrint (aout, "output", fmt);
     return 0;
 }
 
 /**
  * Stops the audio output stream (undoes aout_OutputNew()).
- * \note This can only be called after a succesful aout_OutputNew().
+ * \note This can only be called after a successful aout_OutputNew().
  * \warning The caller must hold the audio output lock.
  */
 void aout_OutputDelete (audio_output_t *aout)
@@ -473,12 +475,19 @@ int aout_OutputTimeGet (audio_output_t *aout, mtime_t *delay)
 
 /**
  * Plays a decoded audio buffer.
- * \note This can only be called after a succesful aout_OutputNew().
+ * \note This can only be called after a successful aout_OutputNew().
  * \warning The caller must hold the audio output lock.
  */
 void aout_OutputPlay (audio_output_t *aout, block_t *block)
 {
     aout_OutputAssertLocked (aout);
+#ifndef NDEBUG
+    aout_owner_t *owner = aout_owner (aout);
+    assert (owner->mixer_format.i_frame_length > 0);
+    assert (block->i_buffer == 0 || block->i_buffer / block->i_nb_samples ==
+            owner->mixer_format.i_bytes_per_frame /
+            owner->mixer_format.i_frame_length);
+#endif
     aout->play (aout, block);
 }
 
@@ -493,7 +502,7 @@ static void PauseDefault (audio_output_t *aout, bool pause, mtime_t date)
  * Notifies the audio output (if any) of pause/resume events.
  * This enables the output to expedite pause, instead of waiting for its
  * buffers to drain.
- * \note This can only be called after a succesful aout_OutputNew().
+ * \note This can only be called after a successful aout_OutputNew().
  * \warning The caller must hold the audio output lock.
  */
 void aout_OutputPause( audio_output_t *aout, bool pause, mtime_t date )
@@ -507,7 +516,7 @@ void aout_OutputPause( audio_output_t *aout, bool pause, mtime_t date )
  * This enables the output to expedite seek and stop.
  * \param wait if true, wait for buffer playback (i.e. drain),
  *             if false, discard the buffers immediately (i.e. flush)
- * \note This can only be called after a succesful aout_OutputNew().
+ * \note This can only be called after a successful aout_OutputNew().
  * \warning The caller must hold the audio output lock.
  */
 void aout_OutputFlush( audio_output_t *aout, bool wait )
@@ -682,7 +691,7 @@ int aout_DeviceSet (audio_output_t *aout, const char *id)
  * The function will heap-allocate two tables of heap-allocated strings;
  * the caller is responsible for freeing all strings and both tables.
  *
- * \param ids pointer to a table of device identifiers [OUT]
+ * \param ids pointer to a table of device identifiers [OUT]
  * \param names pointer to a table of device human-readable descriptions [OUT]
  * \return the number of devices, or negative on error.
  * \note In case of error, *ids and *names are undefined.
@@ -691,20 +700,46 @@ int aout_DevicesList (audio_output_t *aout, char ***ids, char ***names)
 {
     aout_owner_t *owner = aout_owner (aout);
     char **tabid, **tabname;
-    unsigned count;
+    unsigned i = 0;
 
     vlc_mutex_lock (&owner->dev.lock);
-    count = owner->dev.count;
-    tabid = xmalloc (sizeof (*tabid) * count);
-    tabname = xmalloc (sizeof (*tabname) * count);
+    tabid = malloc (sizeof (*tabid) * owner->dev.count);
+    tabname = malloc (sizeof (*tabname) * owner->dev.count);
+
+    if (unlikely(tabid == NULL || tabname == NULL))
+        goto error;
+
     *ids = tabid;
     *names = tabname;
+
     for (aout_dev_t *dev = owner->dev.list; dev != NULL; dev = dev->next)
     {
-        *(tabid++) = xstrdup (dev->id);
-        *(tabname++) = xstrdup (dev->name);
+        tabid[i] = strdup(dev->id);
+        if (unlikely(tabid[i] == NULL))
+            goto error;
+
+        tabname[i] = strdup(dev->name);
+        if (unlikely(tabname[i] == NULL))
+        {
+            free(tabid[i]);
+            goto error;
+        }
+
+        i++;
     }
     vlc_mutex_unlock (&owner->dev.lock);
 
-    return count;
+    return i;
+
+error:
+    vlc_mutex_unlock(&owner->dev.lock);
+    while (i > 0)
+    {
+        i--;
+        free(tabname[i]);
+        free(tabid[i]);
+    }
+    free(tabname);
+    free(tabid);
+    return -1;
 }

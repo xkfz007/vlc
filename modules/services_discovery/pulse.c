@@ -36,7 +36,7 @@
 static int Open (vlc_object_t *);
 static void Close (vlc_object_t *);
 
-VLC_SD_PROBE_HELPER("pulse", "Audio capture", SD_CAT_DEVICES);
+VLC_SD_PROBE_HELPER("pulse", N_("Audio capture"), SD_CAT_DEVICES);
 
 vlc_module_begin ()
     set_shortname (N_("Audio capture"))
@@ -79,6 +79,7 @@ static int Open (vlc_object_t *obj)
     }
 
     sd->p_sys = sys;
+    sd->description = _("Audio capture");
     sys->context = ctx;
     sys->root = NULL;
 
@@ -148,9 +149,7 @@ static int AddSource (services_discovery_t *sd, const pa_source_info *info)
     if (unlikely(asprintf (&mrl, "pulse://%s", info->name) == -1))
         return -1;
 
-    input_item_t *item = input_item_NewWithType (mrl, info->description,
-                                                 0, NULL, 0, -1,
-                                                 ITEM_TYPE_CARD);
+    input_item_t *item = input_item_NewCard (mrl, info->description);
     free (mrl);
     if (unlikely(item == NULL))
         return -1;

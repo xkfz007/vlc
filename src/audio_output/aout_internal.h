@@ -81,6 +81,7 @@ typedef struct
     aout_request_vout_t request_vout;
 
     atomic_uint buffers_lost;
+    atomic_uint buffers_played;
     atomic_uchar restart;
 } aout_owner_t;
 
@@ -133,11 +134,15 @@ bool aout_ChangeFilterString( vlc_object_t *manager, vlc_object_t *aout,
                               const char *var, const char *name, bool b_add );
 
 /* From dec.c */
+#define AOUT_DEC_SUCCESS 0
+#define AOUT_DEC_CHANGED 1
+#define AOUT_DEC_FAILED VLC_EGENERIC
+
 int aout_DecNew(audio_output_t *, const audio_sample_format_t *,
                 const audio_replay_gain_t *, const aout_request_vout_t *);
 void aout_DecDelete(audio_output_t *);
 int aout_DecPlay(audio_output_t *, block_t *, int i_input_rate);
-int aout_DecGetResetLost(audio_output_t *);
+void aout_DecGetResetStats(audio_output_t *, unsigned *, unsigned *);
 void aout_DecChangePause(audio_output_t *, bool b_paused, mtime_t i_date);
 void aout_DecFlush(audio_output_t *, bool wait);
 void aout_RequestRestart (audio_output_t *, unsigned);

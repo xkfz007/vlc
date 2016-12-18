@@ -31,161 +31,163 @@
 # include "config.h"
 #endif
 
+#include <limits.h>
+#include <sys/stat.h>
+
 #include <vlc_common.h>
 #include "fs.h"
 #include <vlc_access.h>
 #include <vlc_input_item.h>
 
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <errno.h>
-#include <unistd.h>
-#include <fcntl.h>
-
 #include <vlc_fs.h>
 #include <vlc_url.h>
-#include <vlc_strings.h>
-#include <vlc_charset.h>
 
 struct access_sys_t
 {
-    char *psz_base_uri;
-    DIR *p_dir;
+    char *base_uri;
+    DIR *dir;
 };
 
 /*****************************************************************************
- * Open: open the directory
+ * DirInit: Init the directory access with a directory stream
  *****************************************************************************/
-int DirOpen (vlc_object_t *p_this)
+int DirInit (access_t *access, DIR *dir)
 {
-    access_t *p_access = (access_t*)p_this;
-    DIR *p_dir;
-    char *psz_base_uri;
+    access_sys_t *sys = malloc(sizeof (*sys));
+    if (unlikely(sys == NULL))
+        goto error;
 
-    if (!p_access->psz_filepath)
-        return VLC_EGENERIC;
-
-    p_dir = vlc_opendir (p_access->psz_filepath);
-    if (p_dir == NULL)
-        return VLC_EGENERIC;
-
-    if (!strcmp (p_access->psz_access, "fd"))
+    if (!strcmp(access->psz_name, "fd"))
     {
-        if (asprintf (&psz_base_uri, "fd://%s", p_access->psz_location) == -1)
-            psz_base_uri = NULL;
+        if (unlikely(asprintf(&sys->base_uri, "fd://%s",
+                              access->psz_location) == -1))
+            sys->base_uri = NULL;
     }
     else
-        psz_base_uri = vlc_path2uri (p_access->psz_filepath, "file");
-    if (unlikely (psz_base_uri == NULL))
-    {
-        closedir (p_dir);
-        return VLC_ENOMEM;
-    }
+        sys->base_uri = vlc_path2uri(access->psz_filepath, "file");
+    if (unlikely(sys->base_uri == NULL))
+        goto error;
 
+    sys->dir = dir;
 
-    p_access->p_sys = calloc (1, sizeof(access_sys_t));
-    if (!p_access->p_sys)
-    {
-        closedir(p_dir);
-        free( psz_base_uri );
-        return VLC_ENOMEM;
-    }
-    p_access->p_sys->p_dir = p_dir;
-    p_access->p_sys->psz_base_uri = psz_base_uri;
-    p_access->pf_readdir = DirRead;
-
+    access->p_sys = sys;
+    access->pf_readdir = DirRead;
+    access->pf_control = access_vaDirectoryControlHelper;
     return VLC_SUCCESS;
+
+error:
+    closedir(dir);
+    free(sys);
+    return VLC_ENOMEM;
+}
+
+/*****************************************************************************
+ * DirOpen: Open the directory access
+ *****************************************************************************/
+int DirOpen (vlc_object_t *obj)
+{
+    access_t *access = (access_t *)obj;
+
+    if (access->psz_filepath == NULL)
+        return VLC_EGENERIC;
+
+    DIR *dir = vlc_opendir(access->psz_filepath);
+    if (dir == NULL)
+        return VLC_EGENERIC;
+
+    return DirInit(access, dir);
 }
 
 /*****************************************************************************
  * Close: close the target
  *****************************************************************************/
-void DirClose( vlc_object_t * p_this )
+void DirClose(vlc_object_t *obj)
 {
-    access_t *p_access = (access_t*)p_this;
-    access_sys_t *p_sys = p_access->p_sys;
+    access_t *access = (access_t *)obj;
+    access_sys_t *sys = access->p_sys;
 
-    free (p_sys->psz_base_uri);
-    closedir (p_sys->p_dir);
-
-    free (p_sys);
+    free(sys->base_uri);
+    closedir(sys->dir);
+    free(sys);
 }
 
-static bool is_looping(access_t *p_access, const char *psz_uri)
+int DirRead (access_t *access, input_item_node_t *node)
 {
-#ifdef S_ISLNK
-    struct stat st;
-    bool b_looping = false;
+    access_sys_t *sys = access->p_sys;
+    const char *entry;
+    int ret = VLC_SUCCESS;
 
-    if (vlc_lstat (psz_uri, &st) != 0)
-        return false;
-    if (S_ISLNK (st.st_mode))
+    bool special_files = var_InheritBool(access, "list-special-files");
+
+    struct access_fsdir fsdir;
+    access_fsdir_init(&fsdir, access, node);
+
+    while (ret == VLC_SUCCESS && (entry = vlc_readdir(sys->dir)) != NULL)
     {
-        char *psz_link = malloc(st.st_size + 1);
-        ssize_t i_ret;
-
-        if (psz_link)
-        {
-            i_ret = readlink(psz_uri, psz_link, st.st_size + 1);
-            if (i_ret > 0 && i_ret <= st.st_size)
-            {
-                psz_link[i_ret] = '\0';
-                if (strstr(p_access->psz_filepath, psz_link))
-                    b_looping = true;
-            }
-            free (psz_link);
-        }
-    }
-    return b_looping;
-#else
-    return false;
-#endif
-}
-
-input_item_t* DirRead (access_t *p_access)
-{
-    access_sys_t *p_sys = p_access->p_sys;
-    DIR *p_dir = p_sys->p_dir;
-    input_item_t *p_item = NULL;
-    const char *psz_entry;
-
-    while (!p_item && (psz_entry = vlc_readdir (p_dir)))
-    {
-        char *psz_uri, *psz_encoded_entry;
         struct stat st;
-        int i_type;
+        int type;
 
-        /* Check if it is a directory or even readable */
-        if (asprintf (&psz_uri, "%s/%s",
-                      p_access->psz_filepath, psz_entry) == -1)
-            return NULL;
-        if (vlc_stat (psz_uri, &st) != 0)
-        {
-            free (psz_uri);
+#ifdef HAVE_OPENAT
+        if (fstatat(dirfd(sys->dir), entry, &st, 0))
             continue;
-        }
-        i_type = S_ISDIR (st.st_mode) ? ITEM_TYPE_DIRECTORY : ITEM_TYPE_FILE;
-        if (i_type == ITEM_TYPE_DIRECTORY && is_looping(p_access, psz_uri))
-        {
-            free (psz_uri);
+#else
+        char path[PATH_MAX];
+
+        if (snprintf(path, PATH_MAX, "%s"DIR_SEP"%s", access->psz_filepath,
+                     entry) >= PATH_MAX || vlc_stat(path, &st))
             continue;
+#endif
+        switch (st.st_mode & S_IFMT)
+        {
+            case S_IFBLK:
+                if (!special_files)
+                    continue;
+                type = ITEM_TYPE_DISC;
+                break;
+            case S_IFCHR:
+                if (!special_files)
+                    continue;
+                type = ITEM_TYPE_CARD;
+                break;
+            case S_IFIFO:
+                if (!special_files)
+                    continue;
+                type = ITEM_TYPE_STREAM;
+                break;
+            case S_IFREG:
+                type = ITEM_TYPE_FILE;
+                break;
+            case S_IFDIR:
+                type = ITEM_TYPE_DIRECTORY;
+                break;
+            /* S_IFLNK cannot occur while following symbolic links */
+            /* S_IFSOCK cannot be opened with open()/openat() */
+            default:
+                continue; /* ignore */
         }
-        free (psz_uri);
 
         /* Create an input item for the current entry */
-        psz_encoded_entry = encode_URI_component (psz_entry);
-        if (psz_encoded_entry == NULL)
-            continue;
-        if (asprintf (&psz_uri, "%s/%s",
-                      p_sys->psz_base_uri, psz_encoded_entry) == -1)
-            return NULL;
-        free (psz_encoded_entry);
+        char *encoded = vlc_uri_encode(entry);
+        if (unlikely(encoded == NULL))
+        {
+            ret = VLC_ENOMEM;
+            break;
+        }
 
-        p_item = input_item_NewWithType (psz_uri, psz_entry,
-                                         0, NULL, 0, 0, i_type);
-        free (psz_uri);
-        if (!p_item)
-            return NULL;
+        char *uri;
+        if (unlikely(asprintf(&uri, "%s/%s", sys->base_uri, encoded) == -1))
+            uri = NULL;
+        free(encoded);
+        if (unlikely(uri == NULL))
+        {
+            ret = VLC_ENOMEM;
+            break;
+        }
+        ret = access_fsdir_additem(&fsdir, uri, entry, type, ITEM_NET_UNKNOWN);
+        free(uri);
     }
-    return p_item;
+
+    access_fsdir_finish(&fsdir, ret == VLC_SUCCESS);
+
+    return ret;
 }

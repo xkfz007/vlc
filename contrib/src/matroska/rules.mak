@@ -1,19 +1,19 @@
 # matroska
 
-MATROSKA_VERSION := 1.4.2
+MATROSKA_VERSION := 1.4.5
 MATROSKA_URL := http://dl.matroska.org/downloads/libmatroska/libmatroska-$(MATROSKA_VERSION).tar.bz2
-#MATROSKA_URL := $(CONTRIB_VIDEOLAN)/libmatroska-$(MATROSKA_VERSION).tar.bz2
 
 PKGS += matroska
 DEPS_matroska = ebml $(DEPS_ebml)
 
 $(TARBALLS)/libmatroska-$(MATROSKA_VERSION).tar.bz2:
-	$(call download,$(MATROSKA_URL))
+	$(call download_pkg,$(MATROSKA_URL),matroska)
 
 .sum-matroska: libmatroska-$(MATROSKA_VERSION).tar.bz2
 
 libmatroska: libmatroska-$(MATROSKA_VERSION).tar.bz2 .sum-matroska
 	$(UNPACK)
+	$(call pkg_static,"libmatroska.pc.in")
 	$(MOVE)
 
 MATROSKA_EXTRA_FLAGS = CXXFLAGS="${CXXFLAGS} -fvisibility=hidden"

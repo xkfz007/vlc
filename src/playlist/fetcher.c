@@ -34,6 +34,7 @@
 #include <vlc_memory.h>
 #include <vlc_demux.h>
 #include <vlc_modules.h>
+#include <vlc_interrupt.h>
 
 #include "libvlc.h"
 #include "art.h"
@@ -75,6 +76,7 @@ struct playlist_fetcher_t
     vlc_mutex_t     lock;
     vlc_cond_t      wait;
     bool            b_live;
+    vlc_interrupt_t *interrupt;
 
     fetcher_entry_t *p_waiting_head[PASS_COUNT];
     fetcher_entry_t *p_waiting_tail[PASS_COUNT];
@@ -95,16 +97,21 @@ playlist_fetcher_t *playlist_fetcher_New( vlc_object_t *parent )
     if( !p_fetcher )
         return NULL;
 
+    p_fetcher->interrupt = vlc_interrupt_create();
+    if( unlikely(p_fetcher->interrupt == NULL) )
+    {
+        free( p_fetcher );
+        return NULL;
+    }
     p_fetcher->object = parent;
     vlc_mutex_init( &p_fetcher->lock );
     vlc_cond_init( &p_fetcher->wait );
     p_fetcher->b_live = false;
 
-    bool b_access = var_InheritBool( parent, "metadata-network-access" );
-    if ( !b_access )
-        b_access = ( var_InheritInteger( parent, "album-art" ) == ALBUM_ART_ALL );
-
-    p_fetcher->e_scope = ( b_access ) ? FETCHER_SCOPE_ANY : FETCHER_SCOPE_LOCAL;
+    if( var_InheritBool( parent, "metadata-network-access" ) )
+        p_fetcher->e_scope = FETCHER_SCOPE_ANY;
+    else
+        p_fetcher->e_scope = FETCHER_SCOPE_LOCAL;
 
     memset( p_fetcher->p_waiting_head, 0, PASS_COUNT * sizeof(fetcher_entry_t *) );
     memset( p_fetcher->p_waiting_tail, 0, PASS_COUNT * sizeof(fetcher_entry_t *) );
@@ -148,6 +155,9 @@ void playlist_fetcher_Push( playlist_fetcher_t *p_fetcher, input_item_t *p_item,
 void playlist_fetcher_Delete( playlist_fetcher_t *p_fetcher )
 {
     fetcher_entry_t *p_next;
+
+    vlc_interrupt_kill(p_fetcher->interrupt);
+
     vlc_mutex_lock( &p_fetcher->lock );
     /* Remove any left-over item, the fetcher will exit */
     for ( int i_queue=0; i_queue<PASS_COUNT; i_queue++ )
@@ -168,6 +178,16 @@ void playlist_fetcher_Delete( playlist_fetcher_t *p_fetcher )
 
     vlc_cond_destroy( &p_fetcher->wait );
     vlc_mutex_destroy( &p_fetcher->lock );
+
+    vlc_interrupt_destroy( p_fetcher->interrupt );
+
+    playlist_album_t album;
+    FOREACH_ARRAY( album, p_fetcher->albums )
+        free( album.psz_album );
+        free( album.psz_artist );
+        free( album.psz_arturl );
+    FOREACH_END()
+    ARRAY_RESET( p_fetcher->albums );
 
     free( p_fetcher );
 }
@@ -343,7 +363,7 @@ static int DownloadArt( playlist_fetcher_t *p_fetcher, input_item_t *p_item )
     char *psz_arturl = input_item_GetArtURL( p_item );
     assert( *psz_arturl );
 
-    if( !strncmp( psz_arturl , "file://", 7 ) )
+    if( !strncasecmp( psz_arturl , "file://", 7 ) )
     {
         msg_Dbg( p_fetcher->object,
                  "Album art is local file, no need to cache" );
@@ -357,7 +377,7 @@ static int DownloadArt( playlist_fetcher_t *p_fetcher, input_item_t *p_item )
         goto error;
     }
 
-    stream_t *p_stream = stream_UrlNew( p_fetcher->object, psz_arturl );
+    stream_t *p_stream = vlc_stream_NewURL( p_fetcher->object, psz_arturl );
     if( !p_stream )
         goto error;
 
@@ -374,13 +394,13 @@ static int DownloadArt( playlist_fetcher_t *p_fetcher, input_item_t *p_item )
         if( !p_data )
             break;
 
-        i_read = stream_Read( p_stream, &p_data[i_data], i_read );
+        i_read = vlc_stream_Read( p_stream, &p_data[i_data], i_read );
         if( i_read <= 0 )
             break;
 
         i_data += i_read;
     }
-    stream_Delete( p_stream );
+    vlc_stream_Delete( p_stream );
 
     if( p_data && i_data > 0 )
     {
@@ -429,6 +449,9 @@ static void *Thread( void *p_data )
     playlist_fetcher_t *p_fetcher = p_data;
     vlc_object_t *obj = p_fetcher->object;
     fetcher_pass_t e_pass = PASS1_LOCAL;
+
+    vlc_interrupt_set(p_fetcher->interrupt);
+
     for( ;; )
     {
         fetcher_entry_t *p_entry = NULL;
@@ -453,6 +476,7 @@ static void *Thread( void *p_data )
         }
         else
         {
+            vlc_interrupt_set( NULL );
             p_fetcher->b_live = false;
             vlc_cond_signal( &p_fetcher->wait );
         }

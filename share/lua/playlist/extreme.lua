@@ -20,23 +20,13 @@
  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
 --]]
 
-function get_prefres()
-    local prefres = -1
-    if vlc.var and vlc.var.inherit then
-        prefres = vlc.var.inherit(nil, "preferred-resolution")
-        if prefres == nil then
-            prefres = -1
-        end
-    end
-    return prefres
-end
-
 -- Probe function.
 function probe()
+    local path = vlc.path:gsub("^www%.", "")
     return vlc.access == "http"
-        and string.match( vlc.path, "extreme%.com/." )
-        or string.match( vlc.path, "freecaster%.tv/." )
-        or string.match( vlc.path, "player%.extreme%.com/info/.")
+        and ( string.match( vlc.path, "^extreme%.com/.+" )
+        or string.match( vlc.path, "^freecaster%.tv/.+" )
+        or string.match( vlc.path, "^player%.extreme%.com/info/.+") )
 end
 
 -- Parse function.
@@ -55,7 +45,7 @@ function parse()
     end
 
     if string.match( vlc.path, "player%.extreme%.com/info/." ) then
-        prefres = get_prefres()
+        prefres = vlc.var.inherit(nil, "preferred-resolution")
         gostraight = true
         while true do
             line = vlc.readline()

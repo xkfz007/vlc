@@ -1,6 +1,6 @@
 # opus
 
-OPUS_VERSION := 1.1
+OPUS_VERSION := 1.1.3
 
 OPUS_URL := http://downloads.xiph.org/releases/opus/opus-$(OPUS_VERSION).tar.gz
 
@@ -10,16 +10,13 @@ PKGS_FOUND += opus
 endif
 
 $(TARBALLS)/opus-$(OPUS_VERSION).tar.gz:
-	$(call download,$(OPUS_URL))
+	$(call download_pkg,$(OPUS_URL),opus)
 
 .sum-opus: opus-$(OPUS_VERSION).tar.gz
 
 opus: opus-$(OPUS_VERSION).tar.gz .sum-opus
 	$(UNPACK)
 	$(UPDATE_AUTOCONFIG)
-ifdef HAVE_VISUALSTUDIO
-	$(APPLY) $(SRC)/opus/msvc.patch
-endif
 	$(MOVE)
 
 OPUS_CONF= --disable-extra-programs --disable-doc

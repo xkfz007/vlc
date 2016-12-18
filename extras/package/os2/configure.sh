@@ -13,7 +13,6 @@ OPTIONS="
       --enable-realrtsp
       --enable-dvbpsi
       --enable-ogg
-      --enable-mkv
       --enable-mad
       --enable-merge-ffmpeg
       --enable-avcodec
@@ -42,7 +41,8 @@ OPTIONS="
 "
 
 export ARCHFLAGS=${ARCHFLAGS-"-march=i486"}
-export CFLAGS="${CFLAGS} ${ARCHFLAGS}"
-export CXXFLAGS="${CXXFLAGS} ${ARCHFLAGS}"
+export CFLAGS="${CFLAGS} ${ARCHFLAGS} -std=gnu11"
+export CXXFLAGS="${CXXFLAGS} ${ARCHFLAGS} -std=gnu++11"
+export BUILDCC="gcc -std=gnu11"
 
-sh "$(dirname $0)"/../../../configure ${OPTIONS} $*
+sh "$(dirname $0)"/../../../configure ${OPTIONS} "$@"

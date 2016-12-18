@@ -46,8 +46,8 @@ static void AndroidPrintMsg(void *opaque, int type, const vlc_log_t *p_item,
     if (verbose < type)
         return;
 
-    if (asprintf(&format2, "[%0*"PRIxPTR"] %s %s: %s",
-                 ptr_width, p_item->i_object_id, p_item->psz_module,
+    if (asprintf(&format2, "[%0*"PRIxPTR"/%lx] %s %s: %s",
+                 ptr_width, p_item->i_object_id, p_item->tid, p_item->psz_module,
                  p_item->psz_object_type, format) < 0)
         return;
     switch (type) {
@@ -75,6 +75,7 @@ static vlc_log_cb Open(vlc_object_t *obj, void **sysp)
     if (verbosity < 0)
         return NULL;
 
+    verbosity += VLC_MSG_ERR;
     *sysp = (void *)(uintptr_t)verbosity;
 
     return AndroidPrintMsg;

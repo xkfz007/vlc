@@ -128,6 +128,7 @@ struct decoder_sys_t
      */
     date_t  end_date;
     mtime_t i_pts;
+    bool b_discontuinity;
 
     int i_frame_size;
     unsigned int i_channels;
@@ -178,7 +179,9 @@ static int  OpenPacketizer(vlc_object_t *);
 static void ClosePacketizer(vlc_object_t *);
 
 static block_t *PacketizeRawBlock    (decoder_t *, block_t **);
+static void     FlushRawBlock( decoder_t * );
 static block_t *PacketizeStreamBlock(decoder_t *, block_t **);
+static void     FlushStreamBlock( decoder_t * );
 
 /*****************************************************************************
  * Module descriptor
@@ -208,6 +211,7 @@ static int OpenPacketizer(vlc_object_t *p_this)
 
     /* Misc init */
     p_sys->i_state = STATE_NOSYNC;
+    p_sys->b_discontuinity = false;
     date_Set(&p_sys->end_date, 0);
     block_BytestreamInit(&p_sys->bytestream);
     p_sys->b_latm_cfg = false;
@@ -256,6 +260,7 @@ static int OpenPacketizer(vlc_object_t *p_this)
 
         /* Set callback */
         p_dec->pf_packetize = PacketizeRawBlock;
+        p_dec->pf_flush = FlushRawBlock;
         p_sys->i_type = TYPE_RAW;
     } else {
         msg_Dbg(p_dec, "no decoder specific info, must be an ADTS or LOAS stream");
@@ -268,6 +273,7 @@ static int OpenPacketizer(vlc_object_t *p_this)
 
         /* Set callback */
         p_dec->pf_packetize = PacketizeStreamBlock;
+        p_dec->pf_flush = FlushStreamBlock;
         p_sys->i_type = TYPE_NONE;
     }
 
@@ -286,6 +292,16 @@ static void ClosePacketizer(vlc_object_t *p_this)
     free(p_sys);
 }
 
+/*****************************************************************************
+ * FlushRawBlock:
+ *****************************************************************************/
+static void FlushRawBlock(decoder_t *p_dec)
+{
+    decoder_sys_t *p_sys = p_dec->p_sys;
+    p_sys->b_discontuinity = true;
+    date_Set(&p_sys->end_date, 0);
+}
+
 /****************************************************************************
  * PacketizeRawBlock: the whole thing
  ****************************************************************************
@@ -299,10 +315,12 @@ static block_t *PacketizeRawBlock(decoder_t *p_dec, block_t **pp_block)
     if (!pp_block || !*pp_block)
         return NULL;
 
-    if ((*pp_block)->i_flags&(BLOCK_FLAG_DISCONTINUITY|BLOCK_FLAG_CORRUPTED)) {
-        date_Set(&p_sys->end_date, 0);
-        block_Release(*pp_block);
-        return NULL;
+    if ((*pp_block)->i_flags & (BLOCK_FLAG_DISCONTINUITY | BLOCK_FLAG_CORRUPTED)) {
+        FlushRawBlock(p_dec);
+        if ((*pp_block)->i_flags&(BLOCK_FLAG_CORRUPTED)) {
+            block_Release(*pp_block);
+            return NULL;
+        }
     }
 
     p_block = *pp_block;
@@ -314,6 +332,8 @@ static block_t *PacketizeRawBlock(decoder_t *p_dec, block_t **pp_block)
         return NULL;
     } else if (p_block->i_pts > VLC_TS_INVALID &&
              p_block->i_pts != date_Get(&p_sys->end_date)) {
+        if(date_Get(&p_sys->end_date) > 0)
+            p_sys->b_discontuinity = true;
         date_Set(&p_sys->end_date, p_block->i_pts);
     }
 
@@ -321,6 +341,12 @@ static block_t *PacketizeRawBlock(decoder_t *p_dec, block_t **pp_block)
 
     p_block->i_length = date_Increment(&p_sys->end_date,
         p_dec->fmt_out.audio.i_frame_length) - p_block->i_pts;
+
+    if(p_sys->b_discontuinity)
+    {
+        p_block->i_flags |= BLOCK_FLAG_DISCONTINUITY;
+        p_sys->b_discontuinity = false;
+    }
 
     return p_block;
 }
@@ -929,6 +955,19 @@ static void SetupOutput(decoder_t *p_dec, block_t *p_block)
         date_Increment(&p_sys->end_date, p_sys->i_frame_length) - p_block->i_pts;
 }
 
+/*****************************************************************************
+ * FlushStreamBlock:
+ *****************************************************************************/
+static void FlushStreamBlock(decoder_t *p_dec)
+{
+    decoder_sys_t *p_sys = p_dec->p_sys;
+
+    p_sys->i_state = STATE_NOSYNC;
+    block_BytestreamEmpty(&p_sys->bytestream);
+    date_Set(&p_sys->end_date, VLC_TS_INVALID);
+    p_sys->b_discontuinity = true;
+}
+
 /****************************************************************************
  * PacketizeStreamBlock: ADTS/LOAS packetizer
  ****************************************************************************/
@@ -939,26 +978,32 @@ static block_t *PacketizeStreamBlock(decoder_t *p_dec, block_t **pp_block)
     block_t *p_out_buffer;
     uint8_t *p_buf;
 
-    if (!pp_block || !*pp_block)
-        return NULL;
+    block_t *p_block = pp_block ? *pp_block : NULL;
 
-    if ((*pp_block)->i_flags&(BLOCK_FLAG_DISCONTINUITY|BLOCK_FLAG_CORRUPTED)) {
-        if ((*pp_block)->i_flags&BLOCK_FLAG_CORRUPTED) {
-            p_sys->i_state = STATE_NOSYNC;
-            block_BytestreamEmpty(&p_sys->bytestream);
+    if(p_block)
+    {
+        if (p_block->i_flags & (BLOCK_FLAG_DISCONTINUITY|BLOCK_FLAG_CORRUPTED)) {
+            /* First always drain complete blocks before discontinuity */
+            block_t *p_drain = PacketizeStreamBlock(p_dec, NULL);
+            if(p_drain)
+                return p_drain;
+
+            FlushStreamBlock(p_dec);
+
+            if (p_block->i_flags & BLOCK_FLAG_CORRUPTED) {
+                block_Release(p_block);
+                return NULL;
+            }
         }
-        date_Set(&p_sys->end_date, 0);
-        block_Release(*pp_block);
-        return NULL;
-    }
 
-    if (!date_Get(&p_sys->end_date) && (*pp_block)->i_pts <= VLC_TS_INVALID) {
-        /* We've just started the stream, wait for the first PTS. */
-        block_Release(*pp_block);
-        return NULL;
-    }
+        if (!date_Get(&p_sys->end_date) && p_block->i_pts <= VLC_TS_INVALID) {
+            /* We've just started the stream, wait for the first PTS. */
+            block_Release(p_block);
+            return NULL;
+        }
 
-    block_BytestreamPush(&p_sys->bytestream, *pp_block);
+        block_BytestreamPush(&p_sys->bytestream, p_block);
+    }
 
     for (;;) switch(p_sys->i_state) {
     case STATE_NOSYNC:
@@ -992,7 +1037,7 @@ static block_t *PacketizeStreamBlock(decoder_t *p_dec, block_t **pp_block)
         /* New frame, set the Presentation Time Stamp */
         p_sys->i_pts = p_sys->bytestream.p_block->i_pts;
         if (p_sys->i_pts > VLC_TS_INVALID &&
-                p_sys->i_pts != date_Get(&p_sys->end_date))
+            p_sys->i_pts != date_Get(&p_sys->end_date))
             date_Set(&p_sys->end_date, p_sys->i_pts);
         p_sys->i_state = STATE_HEADER;
         break;
@@ -1031,8 +1076,6 @@ static block_t *PacketizeStreamBlock(decoder_t *p_dec, block_t **pp_block)
         p_sys->i_state = STATE_NEXT_SYNC;
 
     case STATE_NEXT_SYNC:
-        /* TODO: If p_block == NULL, flush the buffer without checking the
-         * next sync word */
         if (p_sys->bytestream.p_block == NULL) {
             p_sys->i_state = STATE_NOSYNC;
             block_BytestreamFlush(&p_sys->bytestream);
@@ -1042,7 +1085,14 @@ static block_t *PacketizeStreamBlock(decoder_t *p_dec, block_t **pp_block)
         /* Check if next expected frame contains the sync word */
         if (block_PeekOffsetBytes(&p_sys->bytestream, p_sys->i_frame_size
                     + p_sys->i_header_size, p_header, 2) != VLC_SUCCESS)
+        {
+            if(p_block == NULL) /* drain */
+            {
+                p_sys->i_state = STATE_SEND_DATA;
+                break;
+            }
             return NULL; /* Need more data */
+        }
 
         assert((p_sys->i_type == TYPE_ADTS) || (p_sys->i_type == TYPE_LOAS));
         if (((p_sys->i_type == TYPE_ADTS) &&
@@ -1102,9 +1152,16 @@ static block_t *PacketizeStreamBlock(decoder_t *p_dec, block_t **pp_block)
             p_sys->i_pts = p_sys->bytestream.p_block->i_pts = VLC_TS_INVALID;
 
         /* So p_block doesn't get re-added several times */
-        *pp_block = block_BytestreamPop(&p_sys->bytestream);
+        if( pp_block )
+            *pp_block = block_BytestreamPop(&p_sys->bytestream);
 
         p_sys->i_state = STATE_NOSYNC;
+
+        if(p_sys->b_discontuinity)
+        {
+            p_out_buffer->i_flags |= BLOCK_FLAG_DISCONTINUITY;
+            p_sys->b_discontuinity = false;
+        }
 
         return p_out_buffer;
     }

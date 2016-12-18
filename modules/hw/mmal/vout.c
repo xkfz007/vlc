@@ -29,6 +29,7 @@
 #include <math.h>
 
 #include <vlc_common.h>
+#include <vlc_atomic.h>
 #include <vlc_plugin.h>
 #include <vlc_threads.h>
 #include <vlc_vout_display.h>
@@ -180,7 +181,6 @@ static int Open(vlc_object_t *object)
     uint32_t buffer_pitch, buffer_height;
     vout_display_place_t place;
     MMAL_DISPLAYREGION_T display_region;
-    uint32_t offsets[3];
     MMAL_STATUS_T status;
     int ret = VLC_SUCCESS;
     unsigned i;
@@ -273,7 +273,6 @@ static int Open(vlc_object_t *object)
         goto out;
     }
 
-    offsets[0] = 0;
     for (i = 0; i < sys->i_planes; ++i) {
         sys->planes[i].i_lines = buffer_height;
         sys->planes[i].i_pitch = buffer_pitch;
@@ -281,14 +280,11 @@ static int Open(vlc_object_t *object)
         sys->planes[i].i_visible_pitch = vd->fmt.i_visible_width;
 
         if (i > 0) {
-            offsets[i] = offsets[i - 1] + sys->planes[i - 1].i_pitch * sys->planes[i - 1].i_lines;
             sys->planes[i].i_lines /= 2;
             sys->planes[i].i_pitch /= 2;
             sys->planes[i].i_visible_lines /= 2;
             sys->planes[i].i_visible_pitch /= 2;
         }
-
-        sys->planes[i].p_pixels = (uint8_t *)offsets[i];
     }
 
     vlc_mutex_init(&sys->buffer_mutex);
@@ -342,7 +338,7 @@ static void Close(vlc_object_t *object)
         mmal_component_disable(sys->component);
 
     if (sys->pool)
-        mmal_pool_destroy(sys->pool);
+        mmal_port_pool_destroy(sys->input, sys->pool);
 
     if (sys->component)
         mmal_component_release(sys->component);
@@ -351,8 +347,10 @@ static void Close(vlc_object_t *object)
         picture_pool_Release(sys->picture_pool);
     else
         for (i = 0; i < sys->num_buffers; ++i)
-            if (sys->pictures[i])
+            if (sys->pictures[i]) {
+                mmal_buffer_header_release(sys->pictures[i]->p_sys->buffer);
                 picture_Release(sys->pictures[i]);
+            }
 
     vlc_mutex_destroy(&sys->buffer_mutex);
     vlc_cond_destroy(&sys->buffer_cond);
@@ -460,6 +458,18 @@ static picture_pool_t *vd_pool(vout_display_t *vd, unsigned count)
     if (sys->opaque) {
         if (count <= NUM_ACTUAL_OPAQUE_BUFFERS)
             count = NUM_ACTUAL_OPAQUE_BUFFERS;
+
+        MMAL_PARAMETER_BOOLEAN_T zero_copy = {
+            { MMAL_PARAMETER_ZERO_COPY, sizeof(MMAL_PARAMETER_BOOLEAN_T) },
+            1
+        };
+
+        status = mmal_port_parameter_set(sys->input, &zero_copy.hdr);
+        if (status != MMAL_SUCCESS) {
+           msg_Err(vd, "Failed to set zero copy on port %s (status=%"PRIx32" %s)",
+                    sys->input->name, status, mmal_status_to_string(status));
+           goto out;
+        }
     }
 
     if (count < sys->input->buffer_num_recommended)
@@ -485,7 +495,8 @@ static picture_pool_t *vd_pool(vout_display_t *vd, unsigned count)
     }
 
     sys->num_buffers = count;
-    sys->pool = mmal_pool_create(sys->num_buffers, sys->input->buffer_size);
+    sys->pool = mmal_port_pool_create(sys->input, sys->num_buffers,
+            sys->input->buffer_size);
     if (!sys->pool) {
         msg_Err(vd, "Failed to create MMAL pool for %u buffers of size %"PRIu32,
                         count, sys->input->buffer_size);
@@ -497,8 +508,7 @@ static picture_pool_t *vd_pool(vout_display_t *vd, unsigned count)
     for (i = 0; i < sys->num_buffers; ++i) {
         picture_res.p_sys = calloc(1, sizeof(picture_sys_t));
         picture_res.p_sys->owner = (vlc_object_t *)vd;
-        picture_res.p_sys->queue = sys->pool->queue;
-        picture_res.p_sys->mutex = &sys->buffer_mutex;
+        picture_res.p_sys->buffer = mmal_queue_get(sys->pool->queue);
 
         sys->pictures[i] = picture_NewFromResource(&fmt, &picture_res);
         if (!sys->pictures[i]) {
@@ -515,7 +525,6 @@ static picture_pool_t *vd_pool(vout_display_t *vd, unsigned count)
     picture_pool_cfg.picture_count = sys->num_buffers;
     picture_pool_cfg.picture = sys->pictures;
     picture_pool_cfg.lock = mmal_picture_lock;
-    picture_pool_cfg.unlock = mmal_picture_unlock;
 
     sys->picture_pool = picture_pool_NewExtended(&picture_pool_cfg);
     if (!sys->picture_pool) {
@@ -563,13 +572,12 @@ static void vd_display(vout_display_t *vd, picture_t *picture,
     if (!pic_sys->displayed || !sys->opaque) {
         buffer->cmd = 0;
         buffer->length = sys->input->buffer_size;
+        buffer->user_data = picture;
 
-        vlc_mutex_lock(&sys->buffer_mutex);
         status = mmal_port_send_buffer(sys->input, buffer);
         if (status == MMAL_SUCCESS)
-            ++sys->buffers_in_transit;
+            atomic_fetch_add(&sys->buffers_in_transit, 1);
 
-        vlc_mutex_unlock(&sys->buffer_mutex);
         if (status != MMAL_SUCCESS) {
             msg_Err(vd, "Failed to send buffer to input port. Frame dropped");
             picture_Release(picture);
@@ -589,10 +597,12 @@ static void vd_display(vout_display_t *vd, picture_t *picture,
         maintain_phase_sync(vd);
     sys->next_phase_check = (sys->next_phase_check + 1) % PHASE_CHECK_INTERVAL;
 
-    vlc_mutex_lock(&sys->buffer_mutex);
-    while (sys->buffers_in_transit >= MAX_BUFFERS_IN_TRANSIT)
-        vlc_cond_wait(&sys->buffer_cond, &sys->buffer_mutex);
-    vlc_mutex_unlock(&sys->buffer_mutex);
+    if (sys->opaque) {
+        vlc_mutex_lock(&sys->buffer_mutex);
+        while (atomic_load(&sys->buffers_in_transit) >= MAX_BUFFERS_IN_TRANSIT)
+            vlc_cond_wait(&sys->buffer_cond, &sys->buffer_mutex);
+        vlc_mutex_unlock(&sys->buffer_mutex);
+    }
 }
 
 static int vd_control(vout_display_t *vd, int query, va_list args)
@@ -688,7 +698,7 @@ static void input_port_cb(MMAL_PORT_T *port, MMAL_BUFFER_HEADER_T *buffer)
         picture_Release(picture);
 
     vlc_mutex_lock(&sys->buffer_mutex);
-    --sys->buffers_in_transit;
+    atomic_fetch_sub(&sys->buffers_in_transit, 1);
     vlc_cond_signal(&sys->buffer_cond);
     vlc_mutex_unlock(&sys->buffer_mutex);
 }

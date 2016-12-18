@@ -179,7 +179,9 @@ static void msg_rc( intf_thread_t *p_intf, const char *psz_fmt, ... )
     "Enabling the quiet mode will not bring this command box but can also " \
     "be pretty annoying when you want to stop VLC and no video window is " \
     "open." )
+#if !VLC_WINSTORE_APP
 #include "intromsg.h"
+#endif
 #endif
 
 vlc_module_begin ()
@@ -301,7 +303,7 @@ static int Activate( vlc_object_t *p_this )
     {
         vlc_url_t url;
 
-        vlc_UrlParse( &url, psz_host, 0 );
+        vlc_UrlParse( &url, psz_host );
 
         msg_Dbg( p_intf, "base: %s, port: %d", url.psz_host, url.i_port );
 
@@ -340,12 +342,12 @@ static int Activate( vlc_object_t *p_this )
     /* Non-buffered stdout */
     setvbuf( stdout, (char *)NULL, _IOLBF, 0 );
 
-#ifdef _WIN32
+#if VLC_WINSTORE_APP
+    p_sys->b_quiet = true;
+#elif defined(_WIN32)
     p_sys->b_quiet = var_InheritBool( p_intf, "rc-quiet" );
-# if !VLC_WINSTORE_APP
     if( !p_sys->b_quiet )
         intf_consoleIntroMsg( p_intf );
-# endif
 #endif
 
     if( vlc_clone( &p_sys->thread, Run, p_intf, VLC_THREAD_PRIORITY_LOW ) )
@@ -478,7 +480,7 @@ static void *Run( void *data )
 
     p_buffer[0] = 0;
 
-#ifdef _WIN32
+#if defined(_WIN32) && !VLC_WINSTORE_APP
     /* Get the file descriptor of the console input */
     p_intf->p_sys->hConsoleIn = GetStdHandle(STD_INPUT_HANDLE);
     if( p_intf->p_sys->hConsoleIn == INVALID_HANDLE_VALUE )
@@ -524,8 +526,11 @@ static void *Run( void *data )
                 var_AddCallback( p_sys->p_input, "intf-event", InputEvent, p_intf );
             }
         }
-#warning This is not reliable...
-        else if( p_sys->p_input->b_dead )
+
+        int state;
+        if( p_sys->p_input != NULL
+         && ((state = var_GetInteger( p_sys->p_input, "state")) == ERROR_S
+          || state == END_S) )
         {
             var_DelCallback( p_sys->p_input, "intf-event", InputEvent, p_intf );
             vlc_object_release( p_sys->p_input );
@@ -602,30 +607,26 @@ static void *Run( void *data )
         /* If the user typed a registered local command, try it */
         if( var_Type( p_intf, psz_cmd ) & VLC_VAR_ISCOMMAND )
         {
-            vlc_value_t val;
-            int i_ret;
-            val.psz_string = psz_arg;
+            int i_ret = VLC_SUCCESS;
 
             if ((var_Type( p_intf, psz_cmd) & VLC_VAR_CLASS) == VLC_VAR_VOID)
-                i_ret = var_TriggerCallback( p_intf, psz_cmd );
+                var_TriggerCallback( p_intf, psz_cmd );
             else
-                i_ret = var_Set( p_intf, psz_cmd, val );
+                i_ret = var_SetString( p_intf, psz_cmd, psz_arg );
             msg_rc( "%s: returned %i (%s)",
                     psz_cmd, i_ret, vlc_error( i_ret ) );
         }
         /* Or maybe it's a global command */
-        else if( var_Type( p_intf->p_libvlc, psz_cmd ) & VLC_VAR_ISCOMMAND )
+        else if( var_Type( p_intf->obj.libvlc, psz_cmd ) & VLC_VAR_ISCOMMAND )
         {
-            vlc_value_t val;
-            int i_ret;
+            int i_ret = VLC_SUCCESS;
 
-            val.psz_string = psz_arg;
             /* FIXME: it's a global command, but we should pass the
-             * local object as an argument, not p_intf->p_libvlc. */
-            if ((var_Type( p_intf->p_libvlc, psz_cmd) & VLC_VAR_CLASS) == VLC_VAR_VOID)
-                i_ret = var_TriggerCallback( p_intf, psz_cmd );
+             * local object as an argument, not p_intf->obj.libvlc. */
+            if ((var_Type( p_intf->obj.libvlc, psz_cmd) & VLC_VAR_CLASS) == VLC_VAR_VOID)
+                var_TriggerCallback( p_intf, psz_cmd );
             else
-                i_ret = var_Set( p_intf->p_libvlc, psz_cmd, val );
+                i_ret = var_SetString( p_intf->obj.libvlc, psz_cmd, psz_arg );
             if( i_ret != 0 )
             {
                 msg_rc( "%s: returned %i (%s)",
@@ -713,7 +714,7 @@ static void *Run( void *data )
         }
         else if( !strcmp( psz_cmd, "key" ) || !strcmp( psz_cmd, "hotkey" ) )
         {
-            var_SetInteger( p_intf->p_libvlc, "key-action",
+            var_SetInteger( p_intf->obj.libvlc, "key-action",
                             vlc_GetActionId( psz_arg ) );
         }
         else switch( psz_cmd[0] )
@@ -986,7 +987,7 @@ static int Input( vlc_object_t *p_this, char const *psz_cmd,
         }
         else
         {
-            var_SetInteger( p_intf->p_libvlc, "key-action", ACTIONID_JUMP_FORWARD_EXTRASHORT );
+            var_SetInteger( p_intf->obj.libvlc, "key-action", ACTIONID_JUMP_FORWARD_EXTRASHORT );
         }
         i_error = VLC_SUCCESS;
     }
@@ -1000,7 +1001,7 @@ static int Input( vlc_object_t *p_this, char const *psz_cmd,
         }
         else
         {
-            var_SetInteger( p_intf->p_libvlc, "key-action", ACTIONID_JUMP_BACKWARD_EXTRASHORT );
+            var_SetInteger( p_intf->obj.libvlc, "key-action", ACTIONID_JUMP_BACKWARD_EXTRASHORT );
         }
         i_error = VLC_SUCCESS;
     }
@@ -1021,7 +1022,7 @@ static int Input( vlc_object_t *p_this, char const *psz_cmd,
     }
     else if ( !strcmp( psz_cmd, "frame" ) )
     {
-	var_TriggerCallback( p_input, "frame-next" );
+        var_TriggerCallback( p_input, "frame-next" );
         i_error = VLC_SUCCESS;
     }
     else if( !strcmp( psz_cmd, "chapter" ) ||
@@ -1110,18 +1111,15 @@ static int Input( vlc_object_t *p_this, char const *psz_cmd,
         {
             /* get */
             vlc_value_t val, text;
-            int i, i_value;
 
-            if ( var_Get( p_input, psz_variable, &val ) < 0 )
-                goto out;
-            i_value = val.i_int;
+            int i_value = var_GetInteger( p_input, psz_variable );
 
             if ( var_Change( p_input, psz_variable,
                              VLC_VAR_GETCHOICES, &val, &text ) < 0 )
                 goto out;
 
             msg_rc( "+----[ %s ]", val_name.psz_string );
-            for ( i = 0; i < val.p_list->i_count; i++ )
+            for ( int i = 0; i < val.p_list->i_count; i++ )
             {
                 if ( i_value == val.p_list->p_values[i].i_int )
                     msg_rc( "| %"PRId64" - %s *",
@@ -1144,9 +1142,8 @@ out:
 
 static void print_playlist( intf_thread_t *p_intf, playlist_item_t *p_item, int i_level )
 {
-    int i;
     char psz_buffer[MSTRTIME_MAX_SIZE];
-    for( i = 0; i< p_item->i_children; i++ )
+    for( int i = 0; i< p_item->i_children; i++ )
     {
         if( p_item->pp_children[i]->p_input->i_duration != -1 )
         {
@@ -1165,7 +1162,6 @@ static int Playlist( vlc_object_t *p_this, char const *psz_cmd,
                      vlc_value_t oldval, vlc_value_t newval, void *p_data )
 {
     VLC_UNUSED(oldval); VLC_UNUSED(p_data);
-    vlc_value_t val;
 
     intf_thread_t *p_intf = (intf_thread_t*)p_this;
     playlist_t *p_playlist = p_intf->p_sys->p_playlist;
@@ -1200,13 +1196,12 @@ static int Playlist( vlc_object_t *p_this, char const *psz_cmd,
     else if( !strcmp( psz_cmd, "repeat" ) )
     {
         bool b_update = true;
-
-        var_Get( p_playlist, "repeat", &val );
+        bool b_value = var_GetBool( p_playlist, "repeat" );
 
         if( strlen( newval.psz_string ) > 0 )
         {
-            if ( ( !strncmp( newval.psz_string, "on", 2 )  &&  val.b_bool ) ||
-                 ( !strncmp( newval.psz_string, "off", 3 ) && !val.b_bool ) )
+            if ( ( !strncmp( newval.psz_string, "on", 2 )  &&  b_value ) ||
+                 ( !strncmp( newval.psz_string, "off", 3 ) && !b_value ) )
             {
                 b_update = false;
             }
@@ -1214,21 +1209,20 @@ static int Playlist( vlc_object_t *p_this, char const *psz_cmd,
 
         if ( b_update )
         {
-            val.b_bool = !val.b_bool;
-            var_Set( p_playlist, "repeat", val );
+            b_value = !b_value;
+            var_SetBool( p_playlist, "repeat", b_value );
         }
-        msg_rc( "Setting repeat to %d", val.b_bool );
+        msg_rc( "Setting repeat to %s", b_value ? "true" : "false" );
     }
     else if( !strcmp( psz_cmd, "loop" ) )
     {
         bool b_update = true;
-
-        var_Get( p_playlist, "loop", &val );
+        bool b_value = var_GetBool( p_playlist, "loop" );
 
         if( strlen( newval.psz_string ) > 0 )
         {
-            if ( ( !strncmp( newval.psz_string, "on", 2 )  &&  val.b_bool ) ||
-                 ( !strncmp( newval.psz_string, "off", 3 ) && !val.b_bool ) )
+            if ( ( !strncmp( newval.psz_string, "on", 2 )  &&  b_value ) ||
+                 ( !strncmp( newval.psz_string, "off", 3 ) && !b_value ) )
             {
                 b_update = false;
             }
@@ -1236,21 +1230,20 @@ static int Playlist( vlc_object_t *p_this, char const *psz_cmd,
 
         if ( b_update )
         {
-            val.b_bool = !val.b_bool;
-            var_Set( p_playlist, "loop", val );
+            b_value = !b_value;
+            var_SetBool( p_playlist, "loop", b_value );
         }
-        msg_rc( "Setting loop to %d", val.b_bool );
+        msg_rc( "Setting loop to %s", b_value ? "true" : "false" );
     }
     else if( !strcmp( psz_cmd, "random" ) )
     {
         bool b_update = true;
-
-        var_Get( p_playlist, "random", &val );
+        bool b_value = var_GetBool( p_playlist, "random" );
 
         if( strlen( newval.psz_string ) > 0 )
         {
-            if ( ( !strncmp( newval.psz_string, "on", 2 )  &&  val.b_bool ) ||
-                 ( !strncmp( newval.psz_string, "off", 3 ) && !val.b_bool ) )
+            if ( ( !strncmp( newval.psz_string, "on", 2 )  &&  b_value ) ||
+                 ( !strncmp( newval.psz_string, "off", 3 ) && !b_value ) )
             {
                 b_update = false;
             }
@@ -1258,10 +1251,10 @@ static int Playlist( vlc_object_t *p_this, char const *psz_cmd,
 
         if ( b_update )
         {
-            val.b_bool = !val.b_bool;
-            var_Set( p_playlist, "random", val );
+            b_value = !b_value;
+            var_SetBool( p_playlist, "random", b_value );
         }
-        msg_rc( "Setting random to %d", val.b_bool );
+        msg_rc( "Setting random to %s", b_value ? "true" : "false" );
     }
     else if (!strcmp( psz_cmd, "goto" ) )
     {
@@ -1303,9 +1296,8 @@ static int Playlist( vlc_object_t *p_this, char const *psz_cmd,
         if( p_item )
         {
             msg_rc( "Trying to add %s to playlist.", newval.psz_string );
-            int i_ret =playlist_AddInput( p_playlist, p_item,
-                     PLAYLIST_GO|PLAYLIST_APPEND, PLAYLIST_END, true,
-                     pl_Unlocked );
+            int i_ret = playlist_AddInput( p_playlist, p_item,
+                                           PLAYLIST_GO, true );
             vlc_gc_decref( p_item );
             if( i_ret != VLC_SUCCESS )
             {
@@ -1322,8 +1314,7 @@ static int Playlist( vlc_object_t *p_this, char const *psz_cmd,
         {
             msg_rc( "trying to enqueue %s to playlist", newval.psz_string );
             if( playlist_AddInput( p_playlist, p_item,
-                               PLAYLIST_APPEND, PLAYLIST_END, true,
-                               pl_Unlocked ) != VLC_SUCCESS )
+                                   0, true ) != VLC_SUCCESS )
             {
                 return VLC_EGENERIC;
             }
@@ -1332,14 +1323,14 @@ static int Playlist( vlc_object_t *p_this, char const *psz_cmd,
     else if( !strcmp( psz_cmd, "playlist" ) )
     {
         msg_rc( "+----[ Playlist ]" );
-        print_playlist( p_intf, p_playlist->p_root_category, 0 );
+        print_playlist( p_intf, p_playlist->p_root, 0 );
         msg_rc( "+----[ End of playlist ]" );
     }
 
     else if( !strcmp( psz_cmd, "sort" ))
     {
         PL_LOCK;
-        playlist_RecursiveNodeSort( p_playlist, p_playlist->p_root_onelevel,
+        playlist_RecursiveNodeSort( p_playlist, p_playlist->p_root,
                                     SORT_ARTIST, ORDER_NORMAL );
         PL_UNLOCK;
     }
@@ -1402,7 +1393,7 @@ static int Quit( vlc_object_t *p_this, char const *psz_cmd,
     VLC_UNUSED(p_data); VLC_UNUSED(psz_cmd);
     VLC_UNUSED(oldval); VLC_UNUSED(newval);
 
-    libvlc_Quit( p_this->p_libvlc );
+    libvlc_Quit( p_this->obj.libvlc );
     return VLC_SUCCESS;
 }
 
@@ -1537,13 +1528,12 @@ static int VideoConfig( vlc_object_t *p_this, char const *psz_cmd,
         /* set */
         if( !strcmp( psz_variable, "zoom" ) )
         {
-            vlc_value_t val;
-            val.f_float = atof( newval.psz_string );
-            i_error = var_Set( p_vout, psz_variable, val );
+            float f_float = atof( newval.psz_string );
+            i_error = var_SetFloat( p_vout, psz_variable, f_float );
         }
         else
         {
-            i_error = var_Set( p_vout, psz_variable, newval );
+            i_error = var_SetString( p_vout, psz_variable, newval.psz_string );
         }
     }
     else if( !strcmp( psz_cmd, "snapshot" ) )
@@ -1555,22 +1545,19 @@ static int VideoConfig( vlc_object_t *p_this, char const *psz_cmd,
         /* get */
         vlc_value_t val_name;
         vlc_value_t val, text;
-        int i;
         float f_value = 0.;
         char *psz_value = NULL;
 
-        if ( var_Get( p_vout, psz_variable, &val ) < 0 )
-        {
-            vlc_object_release( p_vout );
-            return VLC_EGENERIC;
-        }
         if( !strcmp( psz_variable, "zoom" ) )
-        {
-            f_value = val.f_float;
-        }
+            f_value = var_GetFloat( p_vout, "zoom" );
         else
         {
-            psz_value = val.psz_string;
+            psz_value = var_GetString( p_vout, psz_variable );
+            if( psz_value == NULL )
+            {
+                vlc_object_release( p_vout );
+                return VLC_EGENERIC;
+            }
         }
 
         if ( var_Change( p_vout, psz_variable,
@@ -1589,7 +1576,7 @@ static int VideoConfig( vlc_object_t *p_this, char const *psz_cmd,
         msg_rc( "+----[ %s ]", val_name.psz_string );
         if( !strcmp( psz_variable, "zoom" ) )
         {
-            for ( i = 0; i < val.p_list->i_count; i++ )
+            for ( int i = 0; i < val.p_list->i_count; i++ )
             {
                 if ( f_value == val.p_list->p_values[i].f_float )
                     msg_rc( "| %f - %s *", val.p_list->p_values[i].f_float,
@@ -1601,7 +1588,7 @@ static int VideoConfig( vlc_object_t *p_this, char const *psz_cmd,
         }
         else
         {
-            for ( i = 0; i < val.p_list->i_count; i++ )
+            for ( int i = 0; i < val.p_list->i_count; i++ )
             {
                 if ( !strcmp( psz_value, val.p_list->p_values[i].psz_string ) )
                     msg_rc( "| %s - %s *", val.p_list->p_values[i].psz_string,
@@ -1781,7 +1768,7 @@ static int updateStatistics( intf_thread_t *p_intf, input_item_t *p_item )
     return VLC_SUCCESS;
 }
 
-#ifdef _WIN32
+#if defined(_WIN32) && !VLC_WINSTORE_APP
 static bool ReadWin32( intf_thread_t *p_intf, char *p_buffer, int *pi_size )
 {
     INPUT_RECORD input_record;
@@ -1851,9 +1838,7 @@ static bool ReadWin32( intf_thread_t *p_intf, char *p_buffer, int *pi_size )
 
 bool ReadCommand( intf_thread_t *p_intf, char *p_buffer, int *pi_size )
 {
-    int i_read = 0;
-
-#ifdef _WIN32
+#if defined(_WIN32) && !VLC_WINSTORE_APP
     if( p_intf->p_sys->i_socket == -1 && !p_intf->p_sys->b_quiet )
         return ReadWin32( p_intf, p_buffer, pi_size );
     else if( p_intf->p_sys->i_socket == -1 )
@@ -1863,34 +1848,34 @@ bool ReadCommand( intf_thread_t *p_intf, char *p_buffer, int *pi_size )
     }
 #endif
 
-    while( *pi_size < MAX_LINE_LENGTH &&
-           (i_read = net_Read( p_intf, p_intf->p_sys->i_socket == -1 ?
-                       0 /*STDIN_FILENO*/ : p_intf->p_sys->i_socket,
-                  (uint8_t *)p_buffer + *pi_size, 1, false ) ) > 0 )
+    while( *pi_size < MAX_LINE_LENGTH )
     {
+        if( p_intf->p_sys->i_socket == -1 )
+        {
+            if( read( 0/*STDIN_FILENO*/, p_buffer + *pi_size, 1 ) <= 0 )
+            {   /* Standard input closed: exit */
+                vlc_value_t empty;
+                Quit( VLC_OBJECT(p_intf), NULL, empty, empty, NULL );
+                p_buffer[*pi_size] = 0;
+                return true;
+            }
+        }
+        else
+        {   /* Connection closed */
+            if( net_Read( p_intf, p_intf->p_sys->i_socket, p_buffer + *pi_size,
+                          1 ) <= 0 )
+            {
+                net_Close( p_intf->p_sys->i_socket );
+                p_intf->p_sys->i_socket = -1;
+                p_buffer[*pi_size] = 0;
+                return true;
+            }
+        }
+
         if( p_buffer[ *pi_size ] == '\r' || p_buffer[ *pi_size ] == '\n' )
             break;
 
         (*pi_size)++;
-    }
-
-    /* Connection closed */
-    if( i_read <= 0 )
-    {
-        if( p_intf->p_sys->i_socket != -1 )
-        {
-            net_Close( p_intf->p_sys->i_socket );
-            p_intf->p_sys->i_socket = -1;
-        }
-        else
-        {
-            /* Standard input closed: exit */
-            vlc_value_t empty;
-            Quit( VLC_OBJECT(p_intf), NULL, empty, empty, NULL );
-        }
-
-        p_buffer[ *pi_size ] = 0;
-        return true;
     }
 
     if( *pi_size == MAX_LINE_LENGTH ||
@@ -1919,7 +1904,7 @@ static input_item_t *parse_MRL( const char *mrl )
     input_item_t *p_item = NULL;
     char *psz_item = NULL, *psz_item_mrl = NULL, *psz_orig, *psz_mrl;
     char **ppsz_options = NULL;
-    int i, i_options = 0;
+    int i_options = 0;
 
     if( !mrl ) return 0;
 
@@ -1981,7 +1966,7 @@ static input_item_t *parse_MRL( const char *mrl )
     if( psz_item_mrl )
     {
         p_item = input_item_New( psz_item_mrl, NULL );
-        for( i = 0; i < i_options; i++ )
+        for( int i = 0; i < i_options; i++ )
         {
             input_item_AddOption( p_item, ppsz_options[i], VLC_INPUT_OPTION_TRUSTED );
         }

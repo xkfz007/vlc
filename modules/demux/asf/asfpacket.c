@@ -78,7 +78,7 @@ static uint32_t SkipBytes( stream_t *s, uint32_t i_bytes )
 
     while( i_bytes )
     {
-        i_read = stream_Read( s, NULL, i_to_read );
+        i_read = vlc_stream_Read( s, NULL, i_to_read );
         i_bytes -= i_read;
         i_bytes_read += i_read;
         if ( i_read < i_to_read || i_bytes == 0 )
@@ -95,7 +95,7 @@ static uint32_t SkipBytes( stream_t *s, uint32_t i_bytes )
 static int DemuxSubPayload( asf_packet_sys_t *p_packetsys,
                             uint8_t i_stream_number, block_t **pp_frame,
                             uint32_t i_sub_payload_data_length, mtime_t i_pts, mtime_t i_dts,
-                            uint32_t i_media_object_offset, bool b_keyframe )
+                            uint32_t i_media_object_offset, bool b_keyframe, bool b_ignore_pts )
 {
     /* FIXME I don't use i_media_object_number, sould I ? */
     if( *pp_frame && i_media_object_offset == 0 )
@@ -103,13 +103,13 @@ static int DemuxSubPayload( asf_packet_sys_t *p_packetsys,
         p_packetsys->pf_send( p_packetsys, i_stream_number, pp_frame );
     }
 
-    block_t *p_frag = stream_Block( p_packetsys->p_demux->s, i_sub_payload_data_length );
+    block_t *p_frag = vlc_stream_Block( p_packetsys->p_demux->s, i_sub_payload_data_length );
     if( p_frag == NULL ) {
         msg_Warn( p_packetsys->p_demux, "cannot read data" );
         return -1;
     }
 
-    p_frag->i_pts = VLC_TS_0 + i_pts;
+    p_frag->i_pts = (b_ignore_pts) ? VLC_TS_INVALID : VLC_TS_0 + i_pts;
     p_frag->i_dts = VLC_TS_0 + i_dts;
     if ( b_keyframe )
         p_frag->i_flags |= BLOCK_FLAG_TYPE_I;
@@ -226,6 +226,8 @@ static int DemuxPayload(asf_packet_sys_t *p_packetsys, asf_packet_t *pkt, int i_
     if ( !p_tkinfo )
         goto skip;
 
+    bool b_ignore_pts = (p_tkinfo->i_cat == VIDEO_ES); /* ignore PTS delta with video when not set by mux */
+
     /* Non compressed */
     if( i_replicated_data_length > 7 ) // should be at least 8 bytes
     {
@@ -252,6 +254,7 @@ static int DemuxPayload(asf_packet_sys_t *p_packetsys, asf_packet_t *pkt, int i_
         /* i_media_object_offset is presentation time */
         /* Next byte is Presentation Time Delta */
         i_pts_delta = pkt->p_peek[pkt->i_skip];
+        b_ignore_pts = false;
         i_base_pts = (mtime_t)i_media_object_offset;
         i_base_pts -= *p_packetsys->pi_preroll;
         pkt->i_skip++;
@@ -332,7 +335,7 @@ static int DemuxPayload(asf_packet_sys_t *p_packetsys, asf_packet_t *pkt, int i_
         if ( i_sub_payload_data_length &&
              DemuxSubPayload( p_packetsys, i_stream_number, &p_tkinfo->p_frame,
                               i_sub_payload_data_length, i_payload_pts, i_payload_dts,
-                              i_media_object_offset, b_packet_keyframe ) < 0)
+                              i_media_object_offset, b_packet_keyframe, b_ignore_pts ) < 0)
             return -1;
 
         if ( pkt->left > pkt->i_skip + i_sub_payload_data_length )
@@ -342,7 +345,7 @@ static int DemuxPayload(asf_packet_sys_t *p_packetsys, asf_packet_t *pkt, int i_
         pkt->i_skip = 0;
         if( pkt->left > 0 )
         {
-            int i_return = stream_Peek( p_demux->s, &pkt->p_peek, __MIN(pkt->left, INT_MAX) );
+            int i_return = vlc_stream_Peek( p_demux->s, &pkt->p_peek, __MIN(pkt->left, INT_MAX) );
             if ( i_return <= 0 || (unsigned int) i_return < __MIN(pkt->left, INT_MAX) )
             {
             msg_Warn( p_demux, "cannot peek, EOF ?" );
@@ -371,7 +374,7 @@ int DemuxASFPacket( asf_packet_sys_t *p_packetsys,
     demux_t *p_demux = p_packetsys->p_demux;
 
     const uint8_t *p_peek;
-    int i_return = stream_Peek( p_demux->s, &p_peek,i_data_packet_min );
+    int i_return = vlc_stream_Peek( p_demux->s, &p_peek,i_data_packet_min );
     if( i_return <= 0 || ((unsigned int) i_return) < i_data_packet_min )
     {
         msg_Warn( p_demux, "cannot peek while getting new packet, EOF ?" );
@@ -435,7 +438,7 @@ int DemuxASFPacket( asf_packet_sys_t *p_packetsys,
     pkt.send_time = GetDWLE( p_peek + i_skip ); i_skip += 4;
     /* uint16_t i_packet_duration = GetWLE( p_peek + i_skip ); */ i_skip += 2;
 
-    i_return = stream_Peek( p_demux->s, &p_peek, pkt.length );
+    i_return = vlc_stream_Peek( p_demux->s, &p_peek, pkt.length );
     if( i_return <= 0 || pkt.length == 0 || (unsigned int)i_return < pkt.length )
     {
         msg_Warn( p_demux, "cannot peek, EOF ?" );
@@ -476,7 +479,7 @@ int DemuxASFPacket( asf_packet_sys_t *p_packetsys,
             msg_Warn( p_demux, "Read %"PRIu32" too much bytes in the packet",
                             pkt.padding_length - pkt.left );
 #endif
-        int i_return = stream_Read( p_demux->s, NULL, pkt.left );
+        int i_return = vlc_stream_Read( p_demux->s, NULL, pkt.left );
         if( i_return < 0 || (unsigned int) i_return < pkt.left )
         {
             msg_Err( p_demux, "cannot skip data, EOF ?" );
@@ -493,7 +496,7 @@ loop_error_recovery:
         msg_Err( p_demux, "unsupported packet header, fatal error" );
         return -1;
     }
-    i_return = stream_Read( p_demux->s, NULL, i_data_packet_min );
+    i_return = vlc_stream_Read( p_demux->s, NULL, i_data_packet_min );
     if( i_return <= 0 || (unsigned int) i_return != i_data_packet_min )
     {
         msg_Warn( p_demux, "cannot skip data, EOF ?" );

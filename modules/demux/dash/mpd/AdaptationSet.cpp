@@ -21,15 +21,19 @@
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
+#ifdef HAVE_CONFIG_H
+# include "config.h"
+#endif
 
 #include "AdaptationSet.h"
 #include "Representation.h"
 #include "Period.h"
+#include "MPD.h"
 
 using namespace dash::mpd;
 
 AdaptationSet::AdaptationSet(Period *period) :
-    adaptative::playlist::BaseAdaptationSet( period ),
+    adaptive::playlist::BaseAdaptationSet( period ),
     DASHCommonAttributesElements(),
     subsegmentAlignmentFlag( false )
 {
@@ -37,6 +41,14 @@ AdaptationSet::AdaptationSet(Period *period) :
 
 AdaptationSet::~AdaptationSet()
 {
+}
+
+StreamFormat AdaptationSet::getStreamFormat() const
+{
+    if(!getMimeType().empty())
+        return MPD::mimeToFormat(getMimeType());
+    else
+        return BaseAdaptationSet::getStreamFormat();
 }
 
 bool AdaptationSet::getSubsegmentAlignmentFlag() const
@@ -49,17 +61,4 @@ void AdaptationSet::setSubsegmentAlignmentFlag(bool alignment)
     subsegmentAlignmentFlag = alignment;
 }
 
-const Representation *AdaptationSet::getRepresentationById(const std::string &id) const
-{
-    std::vector<BaseRepresentation*>::const_iterator it = representations.begin();
-    std::vector<BaseRepresentation*>::const_iterator end = representations.end();
 
-    while ( it != end )
-    {
-        Representation *rep = dynamic_cast<Representation *>(*it);
-        if ( rep->getId() == id )
-            return rep;
-        ++it;
-    }
-    return NULL;
-}

@@ -119,7 +119,7 @@ static void ReadElement( xml_reader_t *p_xml_reader, char **ppsz_txt )
     xml_ReaderNextNode( p_xml_reader, &psz_node );
     free( *ppsz_txt );
     *ppsz_txt = strdup( psz_node );
-    resolve_xml_special_chars( *ppsz_txt );
+    vlc_xml_decode( *ppsz_txt );
 
     /* Read the end element */
     xml_ReaderNextNode( p_xml_reader, &psz_node );
@@ -133,7 +133,7 @@ static void ReadElement( xml_reader_t *p_xml_reader, char **ppsz_txt )
 static bool PeekASX( demux_t *p_demux )
 {
     const uint8_t *p_peek;
-    return ( stream_Peek( p_demux->s, &p_peek, 12 ) == 12
+    return ( vlc_stream_Peek( p_demux->s, &p_peek, 12 ) == 12
              && !memcmp( p_peek, "<asx version", 12 ) );
 }
 
@@ -214,7 +214,7 @@ static void ProcessEntry( int *pi_n_entry, xml_reader_t *p_xml_reader,
                     ReadElement( p_xml_reader, &psz_moreinfo );
                 else
                     psz_moreinfo = strdup( psz_node );
-                resolve_xml_special_chars( psz_moreinfo );
+                vlc_xml_decode( psz_moreinfo );
             }
             else if( !strncasecmp( psz_node, "ABSTRACT", 8 ) )
                 ReadElement( p_xml_reader, &psz_description );
@@ -247,7 +247,7 @@ static void ProcessEntry( int *pi_n_entry, xml_reader_t *p_xml_reader,
 
                 if( asprintf( &psz_name, "%d. %s", *pi_n_entry, psz_title ) == -1)
                     psz_name = strdup( psz_title );
-                resolve_xml_special_chars( psz_href );
+                vlc_xml_decode( psz_href );
                 psz_mrl = ProcessMRL( psz_href, psz_prefix );
 
                 /* Add Time information */
@@ -265,9 +265,15 @@ static void ProcessEntry( int *pi_n_entry, xml_reader_t *p_xml_reader,
                 }
 
                 /* Create the input item */
-                p_entry = input_item_NewExt( psz_mrl, psz_name, i_options,
-                        (const char* const*) ppsz_options, VLC_INPUT_OPTION_TRUSTED, i_duration );
-                input_item_CopyOptions( p_current_input, p_entry );
+                p_entry = input_item_NewExt( psz_mrl, psz_name, i_duration,
+                                             ITEM_TYPE_UNKNOWN, ITEM_NET_UNKNOWN );
+                if( p_entry == NULL )
+                    goto end;
+
+                input_item_AddOptions( p_entry, i_options,
+                                       (const char **)ppsz_options,
+                                       VLC_INPUT_OPTION_TRUSTED );
+                input_item_CopyOptions( p_entry, p_current_input );
 
                 /* Add the metadata */
                 if( psz_name )
@@ -285,6 +291,9 @@ static void ProcessEntry( int *pi_n_entry, xml_reader_t *p_xml_reader,
 
                 input_item_node_AppendItem( p_subitems, p_entry );
 
+                input_item_Release( p_entry );
+
+end:
                 while( i_options )
                     free( ppsz_options[--i_options] );
                 free( psz_name );
@@ -307,6 +316,9 @@ static int Demux( demux_t *p_demux )
     const char *psz_node = NULL;
     char *psz_txt = NULL;
     char *psz_base = FindPrefix( p_demux );
+    if (unlikely(psz_base == NULL))
+        return VLC_DEMUXER_EOF;
+
     char *psz_title_asx = NULL;
     char *psz_entryref = NULL;
 
@@ -373,7 +385,7 @@ static int Demux( demux_t *p_demux )
                 else
                     psz_txt = strdup( psz_node );
 
-                resolve_xml_special_chars( psz_txt );
+                vlc_xml_decode( psz_txt );
                 input_item_SetURL( p_current_input, psz_txt );
             }
             else if( !strncasecmp( psz_node, "ABSTRACT", 8 ) )
@@ -399,9 +411,9 @@ static int Demux( demux_t *p_demux )
                 /* Create new input item */
                 input_item_t *p_input;
                 psz_txt = strdup( psz_node );
-                resolve_xml_special_chars( psz_txt );
+                vlc_xml_decode( psz_txt );
                 p_input = input_item_New( psz_txt, psz_title_asx );
-                input_item_CopyOptions( p_current_input, p_input );
+                input_item_CopyOptions( p_input, p_current_input );
                 input_item_node_AppendItem( p_subitems, p_input );
 
                 vlc_gc_decref( p_input );

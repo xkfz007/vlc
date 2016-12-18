@@ -65,8 +65,9 @@ typedef struct HwBuffer
 {
     vlc_thread_t    dequeue_thread;
     bool            b_run;
+    vlc_mutex_t     lock;
     vlc_cond_t      wait;
-    picture_t**     inflight_picture; /**< stores the inflight picture for each output buffer or NULL */
+    picture_sys_t** inflight_picture; /**< stores the inflight picture for each output buffer or NULL */
 
     unsigned int    i_buffers;
     void            **pp_handles;
@@ -74,10 +75,7 @@ typedef struct HwBuffer
     unsigned int    i_max_owned;
     unsigned int    i_owned;
 
-    void            *p_library;
-    void            *window;
 #if defined(USE_IOMX)
-    native_window_api_t native_window;
     native_window_priv_api_t anwpriv;
     native_window_priv *window_priv;
 #endif
@@ -121,6 +119,7 @@ struct decoder_sys_t
     char psz_component[OMX_MAX_STRINGNAME_SIZE];
     char ppsz_components[MAX_COMPONENTS_LIST_SIZE][OMX_MAX_STRINGNAME_SIZE];
     unsigned int components;
+    int i_quirks;
 
     OmxEventQueue event_queue;
 
@@ -135,7 +134,7 @@ struct decoder_sys_t
 
     date_t end_date;
 
-    size_t i_nal_size_length; /* Length of the NAL size field for H264 */
+    uint8_t i_nal_size_length; /* Length of the NAL size field for H264 */
     int b_use_pts;
 
 };

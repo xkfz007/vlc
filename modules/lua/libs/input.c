@@ -34,7 +34,7 @@
 
 #include <vlc_common.h>
 #include <vlc_meta.h>
-
+#include <vlc_url.h>
 #include <vlc_playlist.h>
 
 #include <assert.h>
@@ -114,13 +114,28 @@ static int vlclua_input_metas_internal( lua_State *L, input_item_t *p_item )
     }
 
     lua_newtable( L );
-    char *psz_name;
     const char *psz_meta;
 
-    psz_name = input_item_GetName( p_item );
-    lua_pushstring( L, psz_name );
+    char* psz_uri = input_item_GetURI( p_item );
+    char* psz_filename = psz_uri ? strrchr( psz_uri, '/' ) : NULL;
+
+    if( psz_filename && psz_filename[1] == '\0' )
+    {
+        /* trailing slash, get the preceeding data */
+        psz_filename[0] = '\0';
+        psz_filename = strrchr( psz_uri, '/' );
+    }
+
+    if( psz_filename )
+    {
+        /* url decode, without leading slash */
+        psz_filename = vlc_uri_decode( psz_filename + 1 );
+    }
+
+    lua_pushstring( L, psz_filename );
     lua_setfield( L, -2, "filename" );
-    free( psz_name );
+
+    free( psz_uri );
 
 #define PUSH_META( n, m ) \
     psz_meta = vlc_meta_Get( p_item->p_meta, vlc_meta_ ## n ); \
@@ -285,13 +300,17 @@ static int vlclua_input_item_is_preparsed( lua_State *L )
 
 static int vlclua_input_item_uri( lua_State *L )
 {
-    lua_pushstring( L, input_item_GetURI( vlclua_input_item_get_internal( L ) ) );
+    char *uri = input_item_GetURI( vlclua_input_item_get_internal( L ) );
+    lua_pushstring( L, uri );
+    free( uri );
     return 1;
 }
 
 static int vlclua_input_item_name( lua_State *L )
 {
-    lua_pushstring( L, input_item_GetName( vlclua_input_item_get_internal( L ) ) );
+    char *name = input_item_GetName( vlclua_input_item_get_internal( L ) );
+    lua_pushstring( L, name );
+    free( name );
     return 1;
 }
 
@@ -341,6 +360,7 @@ static int vlclua_input_item_set_meta( lua_State *L )
         META_TYPE( Actors, "actors" )
         META_TYPE( AlbumArtist, "album_artist" )
         META_TYPE( DiscNumber, "disc_number" )
+        META_TYPE( DiscTotal, "disc_total" )
     };
 #undef META_TYPE
 

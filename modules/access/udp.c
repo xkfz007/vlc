@@ -42,8 +42,10 @@
 #include <vlc_access.h>
 #include <vlc_network.h>
 #include <vlc_block.h>
-
-#define MTU 65535
+#include <vlc_interrupt.h>
+#ifdef HAVE_POLL
+# include <poll.h>
+#endif
 
 /*****************************************************************************
  * Module descriptor
@@ -53,6 +55,7 @@ static void Close( vlc_object_t * );
 
 #define BUFFER_TEXT N_("Receive buffer")
 #define BUFFER_LONGTEXT N_("UDP receive buffer size (bytes)" )
+#define TIMEOUT_TEXT N_("UDP Source timeout (sec)")
 
 vlc_module_begin ()
     set_shortname( N_("UDP" ) )
@@ -61,7 +64,8 @@ vlc_module_begin ()
     set_subcategory( SUBCAT_INPUT_ACCESS )
 
     add_obsolete_integer( "server-port" ) /* since 2.0.0 */
-    add_integer( "udp-buffer", 0x400000, BUFFER_TEXT, BUFFER_LONGTEXT, true )
+    add_obsolete_integer( "udp-buffer" ) /* since 3.0.0 */
+    add_integer( "udp-timeout", -1, TIMEOUT_TEXT, NULL, true )
 
     set_capability( "access", 0 )
     add_shortcut( "udp", "udpstream", "udp4", "udp6" )
@@ -72,18 +76,15 @@ vlc_module_end ()
 struct access_sys_t
 {
     int fd;
-    bool running;
-    size_t fifo_size;
-    block_fifo_t *fifo;
-    vlc_thread_t thread;
+    int timeout;
+    size_t mtu;
 };
 
 /*****************************************************************************
  * Local prototypes
  *****************************************************************************/
-static block_t *BlockUDP( access_t * );
+static block_t *BlockUDP( access_t *, bool * );
 static int Control( access_t *, int, va_list );
-static void* ThreadRead( void *data );
 
 /*****************************************************************************
  * Open: open the socket
@@ -91,14 +92,18 @@ static void* ThreadRead( void *data );
 static int Open( vlc_object_t *p_this )
 {
     access_t     *p_access = (access_t*)p_this;
-    access_sys_t *sys = malloc( sizeof( *sys ) );
+    access_sys_t *sys;
+
+    if( p_access->b_preparsing )
+        return VLC_EGENERIC;
+
+    sys = malloc( sizeof( *sys ) );
     if( unlikely( sys == NULL ) )
         return VLC_ENOMEM;
 
     p_access->p_sys = sys;
 
     /* Set up p_access */
-    access_InitFields( p_access );
     ACCESS_SET_CALLBACKS( NULL, BlockUDP, Control, NULL );
 
     char *psz_name = strdup( p_access->psz_location );
@@ -157,28 +162,16 @@ static int Open( vlc_object_t *p_this )
     if( sys->fd == -1 )
     {
         msg_Err( p_access, "cannot open socket" );
-        goto error;
-    }
-
-    sys->fifo = block_FifoNew();
-    if( unlikely( sys->fifo == NULL ) )
-    {
-        net_Close( sys->fd );
-        goto error;
-    }
-
-    sys->running = true;
-    sys->fifo_size = var_InheritInteger( p_access, "udp-buffer");
-
-    if( vlc_clone( &sys->thread, ThreadRead, p_access,
-                   VLC_THREAD_PRIORITY_INPUT ) )
-    {
-        block_FifoRelease( sys->fifo );
-        net_Close( sys->fd );
 error:
         free( sys );
         return VLC_EGENERIC;
     }
+
+    sys->mtu = 7 * 188;
+
+    sys->timeout = var_InheritInteger( p_access, "udp-timeout");
+    if( sys->timeout > 0)
+        sys->timeout *= 1000;
 
     return VLC_SUCCESS;
 }
@@ -191,9 +184,6 @@ static void Close( vlc_object_t *p_this )
     access_t     *p_access = (access_t*)p_this;
     access_sys_t *sys = p_access->p_sys;
 
-    vlc_cancel( sys->thread );
-    vlc_join( sys->thread, NULL );
-    block_FifoRelease( sys->fifo );
     net_Close( sys->fd );
     free( sys );
 }
@@ -208,15 +198,15 @@ static int Control( access_t *p_access, int i_query, va_list args )
 
     switch( i_query )
     {
-        case ACCESS_CAN_SEEK:
-        case ACCESS_CAN_FASTSEEK:
-        case ACCESS_CAN_PAUSE:
-        case ACCESS_CAN_CONTROL_PACE:
+        case STREAM_CAN_SEEK:
+        case STREAM_CAN_FASTSEEK:
+        case STREAM_CAN_PAUSE:
+        case STREAM_CAN_CONTROL_PACE:
             pb_bool = (bool*)va_arg( args, bool* );
             *pb_bool = false;
             break;
 
-        case ACCESS_GET_PTS_DELAY:
+        case STREAM_GET_PTS_DELAY:
             pi_64 = (int64_t*)va_arg( args, int64_t * );
             *pi_64 = INT64_C(1000)
                    * var_InheritInteger(p_access, "network-caching");
@@ -231,71 +221,64 @@ static int Control( access_t *p_access, int i_query, va_list args )
 /*****************************************************************************
  * BlockUDP:
  *****************************************************************************/
-static block_t *BlockUDP( access_t *p_access )
+static block_t *BlockUDP(access_t *access, bool *restrict eof)
 {
-    access_sys_t *sys = p_access->p_sys;
-    block_t *block;
-
-    if (p_access->info.b_eof)
-        return NULL;
-
-    vlc_fifo_Lock(sys->fifo);
-    while (vlc_fifo_IsEmpty(sys->fifo) && sys->running)
-       vlc_fifo_Wait(sys->fifo);
-
-    block = vlc_fifo_DequeueUnlocked(sys->fifo);
-    p_access->info.b_eof = !sys->running;
-    vlc_fifo_Unlock(sys->fifo);
-
-    return block;
-}
-
-/*****************************************************************************
- * ThreadRead: Pull packets from socket as soon as possible.
- *****************************************************************************/
-static void* ThreadRead( void *data )
-{
-    access_t *access = data;
     access_sys_t *sys = access->p_sys;
 
-    for(;;)
-    {
-        block_t *pkt = block_Alloc(MTU);
-        if (unlikely(pkt == NULL))
-            break;
-
-        ssize_t len;
-
-        block_cleanup_push(pkt);
-        do
-            len = net_Read(access, sys->fd, pkt->p_buffer, MTU, false);
-        while (len == -1 && errno != EINTR);
-        vlc_cleanup_pop();
-
-        if (len == -1)
-        {
-            block_Release(pkt);
-            break;
-        }
-
-        pkt->i_buffer = len;
-
-        vlc_fifo_Lock(sys->fifo);
-        /* Discard old buffers on overflow */
-        while (vlc_fifo_GetBytes(sys->fifo) + len > sys->fifo_size)
-        {
-            int canc = vlc_savecancel();
-            block_Release(vlc_fifo_DequeueUnlocked(sys->fifo));
-            vlc_restorecancel(canc);
-        }
-
-        vlc_fifo_QueueUnlocked(sys->fifo, pkt);
-        vlc_fifo_Unlock(sys->fifo);
+    block_t *pkt = block_Alloc(sys->mtu);
+    if (unlikely(pkt == NULL))
+    {   /* OOM - dequeue and discard one packet */
+        char dummy;
+        recv(sys->fd, &dummy, 1, 0);
+        return NULL;
     }
 
-    vlc_fifo_Lock(sys->fifo);
-    sys->running = false;
-    vlc_fifo_Signal(sys->fifo);
-    vlc_fifo_Unlock(sys->fifo);
-    return NULL;
+    struct iovec iov = {
+        .iov_base = pkt->p_buffer,
+        .iov_len = sys->mtu,
+    };
+    struct msghdr msg = {
+        .msg_iov = &iov,
+        .msg_iovlen = 1,
+#ifdef __linux__
+        .msg_flags = MSG_TRUNC,
+#endif
+    };
+
+    struct pollfd ufd[1];
+
+    ufd[0].fd = sys->fd;
+    ufd[0].events = POLLIN;
+
+    switch (vlc_poll_i11e(ufd, 1, sys->timeout))
+    {
+        case 0:
+            msg_Err(access, "receive time-out");
+            *eof = true;
+            /* fall through */
+        case -1:
+            goto skip;
+     }
+
+    ssize_t len = recvmsg(sys->fd, &msg, 0);
+    if (len < 0)
+    {
+skip:
+        block_Release(pkt);
+        return NULL;
+    }
+
+#ifdef MSG_TRUNC
+    if (msg.msg_flags & MSG_TRUNC)
+    {
+        msg_Err(access, "%zd bytes packet truncated (MTU was %zu)",
+                len, sys->mtu);
+        pkt->i_flags |= BLOCK_FLAG_CORRUPTED;
+        sys->mtu = len;
+    }
+    else
+#endif
+        pkt->i_buffer = len;
+
+    return pkt;
 }

@@ -56,10 +56,10 @@ enum vlc_module_properties
     /* command line name (args=const char *) */
 
     VLC_CONFIG_VALUE,
-    /* actual value (args=int/double/const char *) */
+    /* actual value (args=int64_t/double/const char *) */
 
     VLC_CONFIG_RANGE,
-    /* minimum value (args=int/double/const char * twice) */
+    /* minimum value (args=int64_t/double/const char * twice) */
 
     VLC_CONFIG_ADVANCED,
     /* enable advanced flag (args=none) */
@@ -103,7 +103,7 @@ enum vlc_module_properties
 
     VLC_CONFIG_LIST_CB,
     /* callback for suggested values
-     * (args=size_t (*)(vlc_object_t *, <type> **, char ***)) */
+     * (args=const char *, size_t (*)(vlc_object_t *, <type> **, char ***)) */
 
     /* Insert new VLC_CONFIG_* here */
 };
@@ -148,12 +148,14 @@ enum vlc_module_properties
 #define SUBCAT_AUDIO_AFILTER 203
 #define SUBCAT_AUDIO_VISUAL 204
 #define SUBCAT_AUDIO_MISC 205
+#define SUBCAT_AUDIO_RESAMPLER 206
 
 #define CAT_VIDEO 3
 #define SUBCAT_VIDEO_GENERAL 301
 #define SUBCAT_VIDEO_VOUT 302
 #define SUBCAT_VIDEO_VFILTER 303
 #define SUBCAT_VIDEO_SUBPIC 305
+#define SUBCAT_VIDEO_SPLITTER 306
 
 #define CAT_INPUT 4
 #define SUBCAT_INPUT_GENERAL 401
@@ -171,6 +173,7 @@ enum vlc_module_properties
 #define SUBCAT_SOUT_ACO 504
 #define SUBCAT_SOUT_PACKETIZER 505
 #define SUBCAT_SOUT_VOD 507
+#define SUBCAT_SOUT_RENDERER 508
 
 #define CAT_ADVANCED 6
 #define SUBCAT_ADVANCED_MISC 602
@@ -185,8 +188,8 @@ enum vlc_module_properties
 /**
  * Current plugin ABI version
  */
-# define MODULE_SYMBOL 3_0_0a
-# define MODULE_SUFFIX "__3_0_0a"
+# define MODULE_SYMBOL 3_0_0d
+# define MODULE_SUFFIX "__3_0_0d"
 
 /*****************************************************************************
  * Add a few defines. You do not want to read this section. Really.
@@ -233,7 +236,7 @@ enum vlc_module_properties
 #   define EXTERN_SYMBOL
 #endif
 
-typedef int (*vlc_set_cb) (void *, void *, int, ...);
+EXTERN_SYMBOL typedef int (*vlc_set_cb) (void *, void *, int, ...);
 
 #define vlc_plugin_set(...) vlc_set (opaque,   NULL, __VA_ARGS__)
 #define vlc_module_set(...) vlc_set (opaque, module, __VA_ARGS__)
@@ -296,8 +299,9 @@ VLC_METADATA_EXPORTS
         goto error;
 
 #define set_callbacks( activate, deactivate ) \
-    if (vlc_module_set (VLC_MODULE_CB_OPEN, activate) \
-     || vlc_module_set (VLC_MODULE_CB_CLOSE, deactivate)) \
+    if (vlc_module_set(VLC_MODULE_CB_OPEN, #activate, (void *)(activate)) \
+     || vlc_module_set(VLC_MODULE_CB_CLOSE, #deactivate, \
+                       (void *)(deactivate))) \
         goto error;
 
 #define cannot_unload_broken_library( ) \
@@ -467,7 +471,7 @@ VLC_METADATA_EXPORTS
                     (const char *const *)(list_text));
 
 #define change_string_cb( cb ) \
-    vlc_config_set (VLC_CONFIG_LIST_CB, (cb));
+    vlc_config_set (VLC_CONFIG_LIST_CB, #cb, (void *)(cb));
 
 #define change_integer_list( list, list_text ) \
     vlc_config_set (VLC_CONFIG_LIST, \
@@ -476,16 +480,13 @@ VLC_METADATA_EXPORTS
                     (const char *const *)(list_text));
 
 #define change_integer_cb( cb ) \
-    vlc_config_set (VLC_CONFIG_LIST_CB, (cb));
+    vlc_config_set (VLC_CONFIG_LIST_CB, #cb, (cb));
 
 #define change_integer_range( minv, maxv ) \
     vlc_config_set (VLC_CONFIG_RANGE, (int64_t)(minv), (int64_t)(maxv));
 
 #define change_float_range( minv, maxv ) \
     vlc_config_set (VLC_CONFIG_RANGE, (double)(minv), (double)(maxv));
-
-#define change_action_add( pf_action, text ) \
-    (void)(pf_action, text);
 
 /* For options that are saved but hidden from the preferences panel */
 #define change_private() \
@@ -536,9 +537,13 @@ VLC_METADATA_EXPORTS
 
 #ifdef VLC_MODULE_COPYRIGHT
 # define VLC_COPYRIGHT_EXPORT VLC_META_EXPORT(copyright, VLC_MODULE_COPYRIGHT)
+#else
+# define VLC_COPYRIGHT_EXPORT
 #endif
 #ifdef VLC_MODULE_LICENSE
 # define VLC_LICENSE_EXPORT VLC_META_EXPORT(license, VLC_MODULE_LICENSE)
+#else
+# define VLC_LICENSE_EXPORT
 #endif
 
 #define VLC_METADATA_EXPORTS \

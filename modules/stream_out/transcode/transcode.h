@@ -22,6 +22,8 @@ struct sout_stream_sys_t
     vlc_cond_t      cond;
     bool            b_abort;
     picture_fifo_t *pp_pics;
+    vlc_sem_t       picture_pool_has_room;
+    uint32_t        pool_size;
     vlc_thread_t    thread;
 
     /* Audio */
@@ -43,7 +45,6 @@ struct sout_stream_sys_t
     double          f_scale;
     unsigned int    i_width, i_maxwidth;
     unsigned int    i_height, i_maxheight;
-    bool            b_deinterlace;
     char            *psz_deinterlace;
     config_chain_t  *p_deinterlace_cfg;
     int             i_threads;

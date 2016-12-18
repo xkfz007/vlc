@@ -26,12 +26,12 @@
 # define __LIBVLC_PLAYLIST_INTERNAL_H 1
 
 /**
- *  \file
- *  This file contain internal structures and function prototypes related
- *  to the playlist in vlc
+ * \defgroup playlist_internals VLC playlist internals
+ * \ingroup playlist
  *
- * \defgroup vlc_playlist Playlist
  * @{
+ * \file
+ * VLC playlist internal interface
  */
 
 #include "input/input_interface.h"
@@ -47,11 +47,11 @@ void playlist_ServicesDiscoveryKillAll( playlist_t *p_playlist );
 typedef struct playlist_private_t
 {
     playlist_t           public_data;
-    playlist_preparser_t *p_preparser;  /**< Preparser data */
     struct intf_thread_t *interface; /**< Linked-list of interfaces */
 
-    playlist_item_array_t items_to_delete; /**< Array of items and nodes to
-            delete... At the very end. This sucks. */
+    void *input_tree; /**< Search tree for input item
+                           to playlist item mapping */
+    void *id_tree; /**< Search tree for item ID to item mapping */
 
     vlc_sd_internal_t   **pp_sds;
     int                   i_sds;   /**< Number of service discovery modules */
@@ -75,7 +75,6 @@ typedef struct playlist_private_t
         bool          b_request;/**< Set to true by the requester
                                            The playlist sets it back to false
                                            when processing the request */
-        vlc_mutex_t         lock;     /**< Lock to protect request */
     } request;
 
     vlc_thread_t thread; /**< engine thread */
@@ -87,6 +86,7 @@ typedef struct playlist_private_t
     bool     b_reset_currently_playing; /** Reset current item array */
 
     bool     b_tree; /**< Display as a tree */
+    bool     b_preparse; /**< Preparse items */
 } playlist_private_t;
 
 #define pl_priv( pl ) ((playlist_private_t *)(pl))
@@ -118,34 +118,25 @@ int playlist_MLDump( playlist_t *p_playlist );
  * Item management
  **********************************************************************/
 
-void playlist_SendAddNotify( playlist_t *p_playlist, int i_item_id,
-                             int i_node_id, bool b_signal );
-
-playlist_item_t * playlist_NodeAddInput( playlist_t *, input_item_t *,
-        playlist_item_t *,int , int, bool );
+void playlist_SendAddNotify( playlist_t *p_playlist, playlist_item_t *item );
 
 int playlist_InsertInputItemTree ( playlist_t *,
         playlist_item_t *, input_item_node_t *, int, bool );
 
 /* Tree walking */
+int playlist_NodeInsert(playlist_t *, playlist_item_t*, playlist_item_t *,
+                        int);
+
 playlist_item_t *playlist_ItemFindFromInputAndRoot( playlist_t *p_playlist,
-                                input_item_t *p_input, playlist_item_t *p_root,
-                                bool );
+                              input_item_t *p_input, playlist_item_t *p_root );
 
-int playlist_DeleteFromInputInParent( playlist_t *, input_item_t *,
-                                      playlist_item_t *, bool );
-int playlist_DeleteFromItemId( playlist_t*, int );
-int playlist_ItemRelease( playlist_item_t * );
-
-int playlist_NodeEmpty( playlist_t *, playlist_item_t *, bool );
-int playlist_DeleteItem( playlist_t * p_playlist, playlist_item_t *, bool);
+void playlist_ItemRelease( playlist_t *, playlist_item_t * );
 
 void ResetCurrentlyPlaying( playlist_t *p_playlist, playlist_item_t *p_cur );
 void ResyncCurrentIndex( playlist_t *p_playlist, playlist_item_t *p_cur );
 
-/**
- * @}
- */
+playlist_item_t * playlist_GetNextLeaf( playlist_t *, playlist_item_t *p_root,
+    playlist_item_t *p_item, bool b_ena, bool b_unplayed ) VLC_USED;
 
 #define PLAYLIST_DEBUG 1
 //#undef PLAYLIST_DEBUG2
@@ -176,4 +167,5 @@ static inline void pl_unlock_if( playlist_t * p_playlist, bool cond )
     if( cond ) PL_UNLOCK;
 }
 
+/** @} */
 #endif /* !__LIBVLC_PLAYLIST_INTERNAL_H */

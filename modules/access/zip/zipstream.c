@@ -53,8 +53,8 @@ vlc_module_end()
 /** *************************************************************************
  * Local prototypes
  ****************************************************************************/
-static int Read   ( stream_t *, void *p_read, unsigned int i_read );
-static int Peek   ( stream_t *, const uint8_t **pp_peek, unsigned int i_peek );
+static ssize_t Read( stream_t *, void *p_read, size_t i_read );
+static int Seek( stream_t *s, uint64_t );
 static int Control( stream_t *, int i_query, va_list );
 
 typedef struct node node;
@@ -104,7 +104,7 @@ struct node {
 inline static node* new_node( char *name )
 {
     node *n = (node*) calloc( 1, sizeof(node) );
-    n->name = convert_xml_special_chars( name );
+    n->name = vlc_xml_encode( name );
     return n;
 }
 
@@ -174,26 +174,21 @@ int StreamOpen( vlc_object_t *p_this )
 
     /* Verify file format */
     const uint8_t *p_peek;
-    if( stream_Peek( s->p_source, &p_peek, i_zip_marker ) < i_zip_marker )
+    if( vlc_stream_Peek( s->p_source, &p_peek, i_zip_marker ) < i_zip_marker )
         return VLC_EGENERIC;
     if( memcmp( p_peek, p_zip_marker, i_zip_marker ) )
+        return VLC_EGENERIC;
+    if( s->psz_url == NULL )
         return VLC_EGENERIC;
 
     s->p_sys = p_sys = calloc( 1, sizeof( *p_sys ) );
     if( !p_sys )
         return VLC_ENOMEM;
 
-    s->pf_read = Read;
-    s->pf_peek = Peek;
-    s->pf_control = Control;
-
     p_sys->fileFunctions = ( zlib_filefunc_def * )
             calloc( 1, sizeof( zlib_filefunc_def ) );
     if( !p_sys->fileFunctions )
-    {
-        free( p_sys );
-        return VLC_ENOMEM;
-    }
+        goto error;
     p_sys->fileFunctions->zopen_file   = ZipIO_Open;
     p_sys->fileFunctions->zread_file   = ZipIO_Read;
     p_sys->fileFunctions->zwrite_file  = ZipIO_Write;
@@ -207,22 +202,32 @@ int StreamOpen( vlc_object_t *p_this )
     {
         msg_Warn( s, "unable to open file" );
         free( p_sys->fileFunctions );
-        free( p_sys );
-        return VLC_EGENERIC;
+        goto error;
     }
 
     /* Find the stream uri */
-    char *psz_tmp;
-    if( asprintf( &psz_tmp, "%s.xspf", s->psz_path ) == -1 )
-    {
-        free( p_sys->fileFunctions );
-        free( p_sys );
-        return VLC_ENOMEM;
-    }
-    p_sys->psz_path = s->psz_path;
-    s->psz_path = psz_tmp;
+    const char *p = strstr(s->psz_url, "://");
+    p_sys->psz_path = strdup(p ? p + 3 : "");
 
+    char *psz_tmp;
+    if( asprintf( &psz_tmp, "%s.xspf", s->psz_url ) == -1 )
+        psz_tmp = NULL;
+
+    if( p_sys->psz_path == NULL || psz_tmp == NULL )
+    {
+        free( psz_tmp );
+        free( p_sys->psz_path );
+        free( p_sys->fileFunctions );
+    }
+    free(s->psz_url);
+    s->psz_url = psz_tmp;
+    s->pf_read = Read;
+    s->pf_seek = Seek;
+    s->pf_control = Control;
     return VLC_SUCCESS;
+error:
+    free( p_sys );
+    return VLC_ENOMEM;
 }
 
 /** *************************************************************************
@@ -249,7 +254,7 @@ void StreamClose( vlc_object_t *p_this )
 /** *************************************************************************
  * Read
  ****************************************************************************/
-static int Read( stream_t *s, void *p_read, unsigned int i_read )
+static ssize_t Read( stream_t *s, void *p_read, size_t i_read )
 {
     stream_sys_t *p_sys = s->p_sys;
 
@@ -258,7 +263,7 @@ static int Read( stream_t *s, void *p_read, unsigned int i_read )
         return -1;
 
     /* Read the buffer */
-    unsigned i_len = __MIN( i_read, p_sys->i_len - p_sys->i_pos );
+    size_t i_len = __MIN( i_read, p_sys->i_len - p_sys->i_pos );
     if( p_read )
         memcpy( p_read, p_sys->psz_xspf + p_sys->i_pos, i_len );
     p_sys->i_pos += i_len;
@@ -266,22 +271,15 @@ static int Read( stream_t *s, void *p_read, unsigned int i_read )
     return i_len;
 }
 
-/** *************************************************************************
- * Peek
- ****************************************************************************/
-static int Peek( stream_t *s, const uint8_t **pp_peek, unsigned int i_peek )
+static int Seek( stream_t *s, uint64_t i_position )
 {
     stream_sys_t *p_sys = s->p_sys;
 
-    /* Fill the buffer */
-    if( Fill( s ) )
-        return -1;
+    if( i_position > p_sys->i_len )
+        i_position = p_sys->i_len;
 
-    /* Point to the buffer */
-    int i_len = __MIN( i_peek, p_sys->i_len - p_sys->i_pos );
-    *pp_peek = (uint8_t*) p_sys->psz_xspf + p_sys->i_pos;
-
-    return i_len;
+    p_sys->i_pos = i_position;
+    return VLC_SUCCESS;
 }
 
 /** *************************************************************************
@@ -293,25 +291,6 @@ static int Control( stream_t *s, int i_query, va_list args )
 
     switch( i_query )
     {
-        case STREAM_SET_POSITION:
-        {
-            uint64_t i_position = va_arg( args, uint64_t );
-            if( i_position >= p_sys->i_len )
-                return VLC_EGENERIC;
-            else
-            {
-                p_sys->i_pos = (size_t) i_position;
-                return VLC_SUCCESS;
-            }
-        }
-
-        case STREAM_GET_POSITION:
-        {
-            uint64_t *pi_position = va_arg( args, uint64_t* );
-            *pi_position = p_sys->i_pos;
-            return VLC_SUCCESS;
-        }
-
         case STREAM_GET_SIZE:
         {
             uint64_t *pi_size = va_arg( args, uint64_t* );
@@ -322,11 +301,10 @@ static int Control( stream_t *s, int i_query, va_list args )
         case STREAM_GET_CONTENT_TYPE:
             return VLC_EGENERIC;
 
-        case STREAM_UPDATE_SIZE:
         case STREAM_CAN_SEEK:
         case STREAM_CAN_FASTSEEK:
         case STREAM_SET_RECORD_STATE:
-            return stream_vaControl( s->p_source, i_query, args );
+            return vlc_stream_vaControl( s->p_source, i_query, args );
 
         default:
             return VLC_EGENERIC;
@@ -559,7 +537,7 @@ static int WriteXSPF( char **pp_buffer, vlc_array_t *p_filenames,
                       const char *psz_zippath )
 {
     char *psz_zip = strrchr( psz_zippath, DIR_SEP_CHAR );
-    psz_zip = convert_xml_special_chars( psz_zip ? (psz_zip+1) : psz_zippath );
+    psz_zip = vlc_xml_encode( psz_zip ? (psz_zip+1) : psz_zippath );
 
     if( asprintf( pp_buffer, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
         "<playlist version=\"1\" xmlns=\"http://xspf.org/ns/0/\" "
@@ -597,8 +575,7 @@ static int WriteXSPF( char **pp_buffer, vlc_array_t *p_filenames,
         {
             /* Extract file name */
             char *psz_file = strrchr( psz_name, '/' );
-            psz_file = convert_xml_special_chars( psz_file ?
-                    (psz_file+1) : psz_name );
+            psz_file = vlc_xml_encode( psz_file ? (psz_file+1) : psz_name );
 
             /* Build full MRL */
             char *psz_path = strdup( psz_pathtozip );
@@ -789,7 +766,7 @@ static unsigned long ZCALLBACK ZipIO_Read( void *opaque, void *stream,
 {
     (void) stream;
     stream_t *s = (stream_t*) opaque;
-    return (unsigned long) stream_Read( s->p_source, buf, (int) size );
+    return (unsigned long) vlc_stream_Read( s->p_source, buf, (int) size );
 }
 
 /** **************************************************************************
@@ -797,13 +774,13 @@ static unsigned long ZCALLBACK ZipIO_Read( void *opaque, void *stream,
  * \param opaque should be the stream
  * \param stream stream created by ZipIO_Open
  * \return size of the file / stream
- * ATTENTION: this is not stream_Tell, but stream_Size !
+ * ATTENTION: this is not vlc_stream_Tell, but stream_Size !
  *****************************************************************************/
 static long ZCALLBACK ZipIO_Tell( void *opaque, void *stream )
 {
     (void) stream;
     stream_t *s = (stream_t*) opaque;
-    return (long) stream_Size( s->p_source ); /* /!\ not stream_Tell /!\ */
+    return (long) stream_Size( s->p_source ); /* /!\ not vlc_stream_Tell /!\ */
 }
 
 /** **************************************************************************
@@ -822,7 +799,7 @@ static long ZCALLBACK ZipIO_Seek ( void *opaque, void *stream,
     long l_ret;
 
     uint64_t pos = offset + origin;
-    l_ret = (long) stream_Seek( s->p_source, pos );
+    l_ret = (long) vlc_stream_Seek( s->p_source, pos );
     return l_ret;
 }
 
@@ -840,7 +817,7 @@ static int ZCALLBACK ZipIO_Close ( void *opaque, void *stream )
 //     stream_t *s = (stream_t*) opaque;
 //    if( p_demux->p_sys && p_demux->p_sys->zipFile )
 //        p_demux->p_sys->zipFile = NULL;
-//     stream_Seek( s->p_source, 0 );
+//     vlc_stream_Seek( s->p_source, 0 );
     return VLC_SUCCESS;
 }
 

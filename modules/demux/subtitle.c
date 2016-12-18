@@ -38,9 +38,12 @@
 
 #include <ctype.h>
 #include <math.h>
+#include <assert.h>
 
 #include <vlc_demux.h>
 #include <vlc_charset.h>
+
+#include "subtitle_helper.h"
 
 /*****************************************************************************
  * Module descriptor
@@ -63,7 +66,7 @@ static const char *const ppsz_sub_type[] =
     "auto", "microdvd", "subrip", "subviewer", "ssa1",
     "ssa2-4", "ass", "vplayer", "sami", "dvdsubtitle", "mpl2",
     "aqt", "pjs", "mpsub", "jacosub", "psb", "realtext", "dks",
-    "subviewer1","vtt"
+    "subviewer1", "vtt", "sbv"
 };
 
 vlc_module_begin ()
@@ -113,7 +116,8 @@ enum
     SUB_TYPE_DKS,
     SUB_TYPE_SUBVIEW1, /* SUBVIEWER 1 - mplayer calls it subrip09,
                          and Gnome subtitles SubViewer 1.0 */
-    SUB_TYPE_VTT
+    SUB_TYPE_VTT,
+    SUB_TYPE_SBV
 };
 
 typedef struct
@@ -185,7 +189,7 @@ static int  ParsePSB        ( demux_t *, subtitle_t *, int );
 static int  ParseRealText   ( demux_t *, subtitle_t *, int );
 static int  ParseDKS        ( demux_t *, subtitle_t *, int );
 static int  ParseSubViewer1 ( demux_t *, subtitle_t *, int );
-static int  ParseVTT        ( demux_t *, subtitle_t *, int );
+static int  ParseCommonVTTSBV( demux_t *, subtitle_t *, int );
 
 static const struct
 {
@@ -213,7 +217,8 @@ static const struct
     { "realtext",   SUB_TYPE_RT,          "RealText",    ParseRealText },
     { "dks",        SUB_TYPE_DKS,         "DKS",         ParseDKS },
     { "subviewer1", SUB_TYPE_SUBVIEW1,    "Subviewer 1", ParseSubViewer1 },
-    { "text/vtt",   SUB_TYPE_VTT,         "WebVTT",      ParseVTT },
+    { "text/vtt",   SUB_TYPE_VTT,         "WebVTT",      ParseCommonVTTSBV },
+    { "sbv",        SUB_TYPE_SBV,         "SBV",         ParseCommonVTTSBV },
     { NULL,         SUB_TYPE_UNKNOWN,     "Unknown",     NULL }
 };
 /* When adding support for more formats, be sure to add their file extension
@@ -239,7 +244,7 @@ static int Open ( vlc_object_t *p_this )
     int  (*pf_read)( demux_t *, subtitle_t*, int );
     int            i, i_max;
 
-    if( !p_demux->b_force )
+    if( !p_demux->obj.force )
     {
         msg_Dbg( p_demux, "subtitle demux discarded" );
         return VLC_EGENERIC;
@@ -297,14 +302,19 @@ static int Open ( vlc_object_t *p_this )
     }
     free( psz_type );
 
+#ifndef NDEBUG
+    const uint64_t i_start_pos = vlc_stream_Tell( p_demux->s );
+#endif
+    uint64_t i_read_offset = 0;
+
     /* Detect Unicode while skipping the UTF-8 Byte Order Mark */
     bool unicode = false;
     const uint8_t *p_data;
-    if( stream_Peek( p_demux->s, &p_data, 3 ) >= 3
+    if( vlc_stream_Peek( p_demux->s, &p_data, 3 ) >= 3
      && !memcmp( p_data, "\xEF\xBB\xBF", 3 ) )
     {
         unicode = true;
-        stream_Seek( p_demux->s, 3 ); /* skip BOM */
+        i_read_offset = 3; /* skip BOM */
         msg_Dbg( p_demux, "detected Unicode Byte Order Mark" );
     }
 
@@ -320,7 +330,7 @@ static int Open ( vlc_object_t *p_this )
             int i_dummy;
             char p_dummy;
 
-            if( ( s = stream_ReadLine( p_demux->s ) ) == NULL )
+            if( (s = peek_Readline( p_demux->s, &i_read_offset )) == NULL )
                 break;
 
             if( strcasestr( s, "<SAMI>" ) )
@@ -397,6 +407,13 @@ static int Open ( vlc_object_t *p_this )
                 p_sys->i_type = SUB_TYPE_JACOSUB;
                 break;
             }
+            else if( sscanf( s, "%d:%d:%d.%d,%d:%d:%d.%d",
+                                 &i_dummy, &i_dummy, &i_dummy, &i_dummy,
+                                 &i_dummy, &i_dummy, &i_dummy, &i_dummy ) == 8 )
+            {
+                p_sys->i_type = SUB_TYPE_SBV;
+                break;
+            }
             else if( sscanf( s, "%d:%d:%d:", &i_dummy, &i_dummy, &i_dummy ) == 3 ||
                      sscanf( s, "%d:%d:%d ", &i_dummy, &i_dummy, &i_dummy ) == 3 )
             {
@@ -465,17 +482,15 @@ static int Open ( vlc_object_t *p_this )
         }
 
         free( s );
-
-        /* It will nearly always work even for non seekable stream thanks the
-         * caching system, and if it fails we lose just a few sub */
-        if( stream_Seek( p_demux->s, unicode ? 3 : 0 ) )
-            msg_Warn( p_demux, "failed to rewind" );
     }
 
     /* Quit on unknown subtitles */
     if( p_sys->i_type == SUB_TYPE_UNKNOWN )
     {
-        stream_Seek( p_demux->s, 0 );
+#ifndef NDEBUG
+        /* Ensure it will work with non seekable streams */
+        assert( i_start_pos == vlc_stream_Tell( p_demux->s ) );
+#endif
         msg_Warn( p_demux, "failed to recognize subtitle type" );
         free( p_sys );
         return VLC_EGENERIC;
@@ -493,6 +508,9 @@ static int Open ( vlc_object_t *p_this )
     }
 
     msg_Dbg( p_demux, "loading all subtitles..." );
+
+    if( unicode ) /* skip BOM */
+        vlc_stream_Seek( p_demux->s, 3 );
 
     /* Load the whole file */
     TextLoad( &p_sys->txt, p_demux->s );
@@ -601,6 +619,10 @@ static int Control( demux_t *p_demux, int i_query, va_list args )
 
     switch( i_query )
     {
+        case DEMUX_CAN_SEEK:
+            *va_arg( args, bool * ) = true;
+            return VLC_SUCCESS;
+
         case DEMUX_GET_LENGTH:
             pi64 = (int64_t*)va_arg( args, int64_t * );
             *pi64 = p_sys->i_length;
@@ -695,7 +717,7 @@ static int Demux( demux_t *p_demux )
     if( p_sys->i_subtitle >= p_sys->i_subtitles )
         return 0;
 
-    i_maxdate = p_sys->i_next_demux_date - var_GetInteger( p_demux->p_parent, "spu-delay" );;
+    i_maxdate = p_sys->i_next_demux_date - var_GetInteger( p_demux->obj.parent, "spu-delay" );;
     if( i_maxdate <= 0 && p_sys->i_subtitle < p_sys->i_subtitles )
     {
         /* Should not happen */
@@ -740,40 +762,23 @@ static int Demux( demux_t *p_demux )
     return 1;
 }
 
+
+static int subtitle_cmp( const void *first, const void *second )
+{
+    int64_t result = ((subtitle_t *)(first))->i_start - ((subtitle_t *)(second))->i_start;
+    /* Return -1, 0 ,1, and not directly substraction
+     * as result can be > INT_MAX */
+    return result == 0 ? 0 : result > 0 ? 1 : -1;
+}
 /*****************************************************************************
  * Fix: fix time stamp and order of subtitle
  *****************************************************************************/
 static void Fix( demux_t *p_demux )
 {
     demux_sys_t *p_sys = p_demux->p_sys;
-    bool b_done;
 
     /* *** fix order (to be sure...) *** */
-    /* We suppose that there are near in order and this durty bubble sort
-     * would not take too much time
-     */
-    do
-    {
-        b_done = true;
-        for( int i_index = 1; i_index < p_sys->i_subtitles; i_index++ )
-        {
-            if( p_sys->subtitle[i_index].i_start <
-                p_sys->subtitle[i_index - 1].i_start )
-            {
-                subtitle_t sub_xch;
-                memcpy( &sub_xch,
-                        p_sys->subtitle + i_index - 1,
-                        sizeof( subtitle_t ) );
-                memcpy( p_sys->subtitle + i_index - 1,
-                        p_sys->subtitle + i_index,
-                        sizeof( subtitle_t ) );
-                memcpy( p_sys->subtitle + i_index,
-                        &sub_xch,
-                        sizeof( subtitle_t ) );
-                b_done = false;
-            }
-        }
-    } while( !b_done );
+    qsort( p_sys->subtitle, p_sys->i_subtitles, sizeof( p_sys->subtitle[0] ), subtitle_cmp);
 }
 
 static int TextLoad( text_t *txt, stream_t *s )
@@ -791,7 +796,7 @@ static int TextLoad( text_t *txt, stream_t *s )
     /* load the complete file */
     for( ;; )
     {
-        char *psz = stream_ReadLine( s );
+        char *psz = vlc_stream_ReadLine( s );
 
         if( psz == NULL )
             break;
@@ -2162,11 +2167,11 @@ static int ParseSubViewer1( demux_t *p_demux, subtitle_t *p_subtitle, int i_idx 
 
     return VLC_SUCCESS;
 }
-/*Parsing WebVTT */
-static int  ParseVTT( demux_t *p_demux, subtitle_t *p_subtitle, int i_idx )
+
+/* Common code for VTT/SBV since they just differ in timestamps */
+static int ParseCommonVTTSBV( demux_t *p_demux, subtitle_t *p_subtitle, int i_idx )
 {
     VLC_UNUSED( i_idx );
-
     demux_sys_t *p_sys = p_demux->p_sys;
     text_t      *txt = &p_sys->txt;
     char        *psz_text;
@@ -2180,18 +2185,33 @@ static int  ParseVTT( demux_t *p_demux, subtitle_t *p_subtitle, int i_idx )
         if( !s )
             return VLC_EGENERIC;
 
-        if( sscanf( s,"%d:%d:%d.%d --> %d:%d:%d.%d",
-                    &h1, &m1, &s1, &d1,
-                    &h2, &m2, &s2, &d2 ) == 8 ||
-            sscanf( s,"%d:%d:%d.%d --> %d:%d.%d",
-                    &h1, &m1, &s1, &d1,
-                         &m2, &s2, &d2 ) == 7 ||
-            sscanf( s,"%d:%d.%d --> %d:%d:%d.%d",
-                         &m1, &s1, &d1,
-                    &h2, &m2, &s2, &d2 ) == 7 ||
-            sscanf( s,"%d:%d.%d --> %d:%d.%d",
-                         &m1, &s1, &d1,
-                         &m2, &s2, &d2 ) == 6 )
+        bool b_matched = false;
+
+        if( p_sys->i_type == SUB_TYPE_VTT )
+        {
+            b_matched =
+            ( sscanf( s,"%d:%d.%d --> %d:%d.%d",
+                             &m1, &s1, &d1,
+                             &m2, &s2, &d2 ) == 6 ||
+                sscanf( s,"%d:%d.%d --> %d:%d:%d.%d",
+                             &m1, &s1, &d1,
+                        &h2, &m2, &s2, &d2 ) == 7 ||
+                sscanf( s,"%d:%d:%d.%d --> %d:%d.%d",
+                        &h1, &m1, &s1, &d1,
+                             &m2, &s2, &d2 ) == 7 ||
+                sscanf( s,"%d:%d:%d.%d --> %d:%d:%d.%d",
+                        &h1, &m1, &s1, &d1,
+                        &h2, &m2, &s2, &d2 ) == 8 );
+        }
+        else if( p_sys->i_type == SUB_TYPE_SBV )
+        {
+            b_matched =
+            ( sscanf( s,"%d:%d:%d.%d,%d:%d:%d.%d",
+                        &h1, &m1, &s1, &d1,
+                        &h2, &m2, &s2, &d2 ) == 8 );
+        }
+
+        if( b_matched )
         {
             p_subtitle->i_start = ( (int64_t)h1 * 3600 * 1000 +
                                     (int64_t)m1 * 60 * 1000 +

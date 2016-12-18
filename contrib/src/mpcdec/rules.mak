@@ -7,10 +7,10 @@ PKGS += mpcdec
 #MUSE_URL := http://files2.musepack.net/source/libmpcdec-$(MUSE_VERSION).tar.bz2
 
 MUSE_REV := 481
-MUSE_URL := $(CONTRIB_VIDEOLAN)/musepack_src_r$(MUSE_REV).tar.gz
+MUSE_URL := $(CONTRIB_VIDEOLAN)/mpcdec/musepack_src_r$(MUSE_REV).tar.gz
 
 $(TARBALLS)/musepack_src_r$(MUSE_REV).tar.gz:
-	$(call download,$(MUSE_URL))
+	$(call download_pkg,$(MUSE_URL),mpcdec)
 
 #MUSE_REV := 481
 #MUSE_SVN := http://svn.musepack.net/libmpc/trunk/
@@ -46,5 +46,6 @@ endif
 	cd $< && $(HOSTVARS_PIC) $(CMAKE) -DSHARED=OFF .
 	cd $< && $(MAKE) install
 	mkdir -p -- "$(PREFIX)/lib"
-	cd $< && cp libmpcdec/libmpcdec_static.a "$(PREFIX)/lib/libmpcdec.a"
+	# Use globbing to work around cmake's change of destination file
+	cd $< && cp libmpcdec/*mpcdec_static.* "$(PREFIX)/lib/libmpcdec.a"
 	touch $@
