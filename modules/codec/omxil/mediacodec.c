@@ -80,7 +80,7 @@ typedef int (*dec_process_output_cb)(decoder_t *, mc_api_out *, picture_t **,
 
 struct decoder_sys_t
 {
-    mc_api *api;
+    mc_api api;
 
     /* Codec Specific Data buffer: sent in DecodeCommon after a start or a flush
      * with the BUFFER_FLAG_CODEC_CONFIG flag.*/
@@ -118,6 +118,7 @@ struct decoder_sys_t
         struct
         {
             void *p_surface, *p_jsurface;
+            unsigned i_angle;
             unsigned int i_stride, i_slice_height;
             int i_pixel_format;
             uint8_t i_nal_length_size;
@@ -491,6 +492,33 @@ static int UpdateOpaqueVout(decoder_t *p_dec)
     decoder_sys_t *p_sys = p_dec->p_sys;
     picture_t *p_dummy_hwpic;
 
+    if (p_sys->api.b_support_rotation)
+    {
+        switch (p_dec->fmt_in.video.orientation)
+        {
+            case ORIENT_ROTATED_90:
+                p_sys->video.i_angle = 90;
+                break;
+            case ORIENT_ROTATED_180:
+                p_sys->video.i_angle = 180;
+                break;
+            case ORIENT_ROTATED_270:
+                p_sys->video.i_angle = 270;
+                break;
+            default:
+                p_sys->video.i_angle = 0;
+                break;
+        }
+
+        /* If MediaCodec can handle the rotation, reset the orientation to
+         * Normal in order to ask the vout not to rotate. */
+        if (p_sys->video.i_angle != 0)
+            video_format_ApplyRotation(&p_dec->fmt_out.video,
+                                       &p_dec->fmt_in.video);
+    }
+    else
+        p_sys->video.i_angle = 0;
+
     /* Direct rendering: Request a valid OPAQUE Vout in order to get
      * the surface attached to it */
     if (decoder_UpdateVideoFormat(p_dec) != 0
@@ -501,11 +529,11 @@ static int UpdateOpaqueVout(decoder_t *p_dec)
     }
 
     assert(p_dummy_hwpic->p_sys);
-    assert(p_dummy_hwpic->p_sys->priv.hw.p_surface);
-    assert(p_dummy_hwpic->p_sys->priv.hw.p_jsurface);
+    assert(p_dummy_hwpic->p_sys->hw.p_surface);
+    assert(p_dummy_hwpic->p_sys->hw.p_jsurface);
 
-    p_sys->video.p_surface = p_dummy_hwpic->p_sys->priv.hw.p_surface;
-    p_sys->video.p_jsurface = p_dummy_hwpic->p_sys->priv.hw.p_jsurface;
+    p_sys->video.p_surface = p_dummy_hwpic->p_sys->hw.p_surface;
+    p_sys->video.p_jsurface = p_dummy_hwpic->p_sys->hw.p_jsurface;
     picture_Release(p_dummy_hwpic);
     return VLC_SUCCESS;
 }
@@ -518,7 +546,7 @@ static int StartMediaCodec(decoder_t *p_dec)
     decoder_sys_t *p_sys = p_dec->p_sys;
     union mc_api_args args;
 
-    if (((p_sys->api->i_quirks & MC_API_QUIRKS_NEED_CSD) && !p_sys->pp_csd))
+    if (((p_sys->api.i_quirks & MC_API_QUIRKS_NEED_CSD) && !p_sys->pp_csd))
     {
         msg_Warn(p_dec, "waiting for extra data for codec %4.4s",
                  (const char *)&p_dec->fmt_in.i_codec);
@@ -535,21 +563,7 @@ static int StartMediaCodec(decoder_t *p_dec)
         }
         args.video.i_width = p_dec->fmt_out.video.i_width;
         args.video.i_height = p_dec->fmt_out.video.i_height;
-
-        switch (p_dec->fmt_in.video.orientation)
-        {
-            case ORIENT_ROTATED_90:
-                args.video.i_angle = 90;
-                break;
-            case ORIENT_ROTATED_180:
-                args.video.i_angle = 180;
-                break;
-            case ORIENT_ROTATED_270:
-                args.video.i_angle = 270;
-                break;
-            default:
-                args.video.i_angle = 0;
-        }
+        args.video.i_angle = p_sys->video.i_angle;
 
         /* Configure again if h264 profile changed */
         if (p_dec->fmt_in.i_codec == VLC_CODEC_H264
@@ -559,8 +573,8 @@ static int StartMediaCodec(decoder_t *p_dec)
             if (h264_get_profile_level(&p_dec->fmt_in, &i_profile, NULL, NULL))
             {
                 p_sys->video.i_h264_profile = i_profile;
-                if (p_sys->api->configure(p_sys->api,
-                                          p_sys->video.i_h264_profile) != 0)
+                if (p_sys->api.configure(&p_sys->api,
+                                         p_sys->video.i_h264_profile) != 0)
                     return VLC_EGENERIC;
             }
         }
@@ -578,7 +592,7 @@ static int StartMediaCodec(decoder_t *p_dec)
         args.audio.i_channel_count  = p_dec->p_sys->audio.i_channels;
     }
 
-    return p_sys->api->start(p_sys->api, &args);
+    return p_sys->api.start(&p_sys->api, &args);
 }
 
 /*****************************************************************************
@@ -590,10 +604,10 @@ static void StopMediaCodec(decoder_t *p_dec)
 
     /* Remove all pictures that are currently in flight in order
      * to prevent the vout from using destroyed output buffers. */
-    if (p_sys->api->b_direct_rendering)
+    if (p_sys->api.b_direct_rendering)
         RemoveInflightPictures(p_dec);
 
-    p_sys->api->stop(p_sys->api);
+    p_sys->api.stop(&p_sys->api);
 }
 
 /*****************************************************************************
@@ -603,7 +617,6 @@ static int OpenDecoder(vlc_object_t *p_this, pf_MediaCodecApi_init pf_init)
 {
     decoder_t *p_dec = (decoder_t *)p_this;
     decoder_sys_t *p_sys;
-    mc_api *api;
     int i_ret;
     size_t i_h264_profile = 0;
     const char *mime = NULL;
@@ -680,12 +693,14 @@ static int OpenDecoder(vlc_object_t *p_this, pf_MediaCodecApi_init pf_init)
         return VLC_EGENERIC;
     }
 
-    if ((api = calloc(1, sizeof(mc_api))) == NULL)
+    /* Allocate the memory needed to store the decoder's structure */
+    if ((p_sys = calloc(1, sizeof(*p_sys))) == NULL)
         return VLC_ENOMEM;
-    api->p_obj = p_this;
-    api->i_codec = p_dec->fmt_in.i_codec;
-    api->i_cat = p_dec->fmt_in.i_cat;
-    api->psz_mime = mime;
+
+    p_sys->api.p_obj = p_this;
+    p_sys->api.i_codec = p_dec->fmt_in.i_codec;
+    p_sys->api.i_cat = p_dec->fmt_in.i_cat;
+    p_sys->api.psz_mime = mime;
 
     if (p_dec->fmt_in.i_codec == VLC_CODEC_H264)
     {
@@ -694,41 +709,33 @@ static int OpenDecoder(vlc_object_t *p_this, pf_MediaCodecApi_init pf_init)
             i_h264_profile = i_profile;
     }
 
-    if (pf_init(api) != 0)
+    if (pf_init(&p_sys->api) != 0)
     {
-        free(api);
+        free(p_sys);
         return VLC_EGENERIC;
     }
-    if (api->configure(api, i_h264_profile) != 0)
+    if (p_sys->api.configure(&p_sys->api, i_h264_profile) != 0)
     {
         /* If the device can't handle video/wvc1,
          * it can probably handle video/x-ms-wmv */
         if (!strcmp(mime, "video/wvc1") && p_dec->fmt_in.i_codec == VLC_CODEC_VC1)
         {
-            api->psz_mime = "video/x-ms-wmv";
-            if (api->configure(api, i_h264_profile) != 0)
+            p_sys->api.psz_mime = "video/x-ms-wmv";
+            if (p_sys->api.configure(&p_sys->api, i_h264_profile) != 0)
             {
-                api->clean(api);
-                free(api);
+                p_sys->api.clean(&p_sys->api);
+                free(p_sys);
                 return (VLC_EGENERIC);
             }
         }
         else
         {
-            api->clean(api);
-            free(api);
+            p_sys->api.clean(&p_sys->api);
+            free(p_sys);
             return VLC_EGENERIC;
         }
     }
 
-    /* Allocate the memory needed to store the decoder's structure */
-    if ((p_sys = calloc(1, sizeof(*p_sys))) == NULL)
-    {
-        api->clean(api);
-        free(api);
-        return VLC_ENOMEM;
-    }
-    p_sys->api = api;
     p_dec->p_sys = p_sys;
 
     p_dec->fmt_out.i_cat = p_dec->fmt_in.i_cat;
@@ -788,7 +795,7 @@ static int OpenDecoder(vlc_object_t *p_this, pf_MediaCodecApi_init pf_init)
         p_sys->pf_process_output = Audio_ProcessOutput;
         p_sys->audio.i_channels = p_dec->fmt_in.audio.i_channels;
 
-        if ((p_sys->api->i_quirks & MC_API_AUDIO_QUIRKS_NEED_CHANNELS)
+        if ((p_sys->api.i_quirks & MC_API_AUDIO_QUIRKS_NEED_CHANNELS)
          && !p_sys->audio.i_channels)
         {
             msg_Warn(p_dec, "codec need a valid channel count");
@@ -880,14 +887,13 @@ static void CleanDecoder(decoder_t *p_dec)
     StopMediaCodec(p_dec);
 
     CSDFree(p_dec);
-    p_sys->api->clean(p_sys->api);
+    p_sys->api.clean(&p_sys->api);
 
     if (p_dec->fmt_in.i_cat == VIDEO_ES)
     {
         if (p_sys->video.timestamp_fifo)
             timestamp_FifoRelease(p_sys->video.timestamp_fifo);
     }
-    free(p_sys->api);
     free(p_sys);
 }
 
@@ -918,7 +924,7 @@ static void ReleasePicture(decoder_t *p_dec, unsigned i_index, bool b_render)
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
 
-    p_sys->api->release_out(p_sys->api, i_index, b_render);
+    p_sys->api.release_out(&p_sys->api, i_index, b_render);
 }
 
 static void InvalidateAllPictures(decoder_t *p_dec)
@@ -934,10 +940,10 @@ static int InsertInflightPicture(decoder_t *p_dec, picture_sys_t *p_picsys)
 {
     decoder_sys_t *p_sys = p_dec->p_sys;
 
-    if (!p_picsys->priv.hw.p_dec)
+    if (!p_picsys->hw.p_dec)
     {
-        p_picsys->priv.hw.p_dec = p_dec;
-        p_picsys->priv.hw.pf_release = ReleasePicture;
+        p_picsys->hw.p_dec = p_dec;
+        p_picsys->hw.pf_release = ReleasePicture;
         TAB_APPEND_CAST((picture_sys_t **),
                         p_sys->video.i_inflight_pictures,
                         p_sys->video.pp_inflight_pictures,
@@ -976,23 +982,23 @@ static int Video_ProcessOutput(decoder_t *p_dec, mc_api_out *p_out,
 
         if (!p_sys->b_has_format) {
             msg_Warn(p_dec, "Buffers returned before output format is set, dropping frame");
-            return p_sys->api->release_out(p_sys->api, p_out->buf.i_index, false);
+            return p_sys->api.release_out(&p_sys->api, p_out->buf.i_index, false);
         }
 
         if (p_out->buf.i_ts <= p_sys->i_preroll_end)
-            return p_sys->api->release_out(p_sys->api, p_out->buf.i_index, false);
+            return p_sys->api.release_out(&p_sys->api, p_out->buf.i_index, false);
 
-        if (!p_sys->api->b_direct_rendering && p_out->buf.p_ptr == NULL)
+        if (!p_sys->api.b_direct_rendering && p_out->buf.p_ptr == NULL)
         {
             /* This can happen when receiving an EOS buffer */
             msg_Warn(p_dec, "Invalid buffer, dropping frame");
-            return p_sys->api->release_out(p_sys->api, p_out->buf.i_index, false);
+            return p_sys->api.release_out(&p_sys->api, p_out->buf.i_index, false);
         }
 
         p_pic = decoder_NewPicture(p_dec);
         if (!p_pic) {
             msg_Warn(p_dec, "NewPicture failed");
-            return p_sys->api->release_out(p_sys->api, p_out->buf.i_index, false);
+            return p_sys->api.release_out(&p_sys->api, p_out->buf.i_index, false);
         }
 
         if (forced_ts == VLC_TS_INVALID)
@@ -1001,9 +1007,9 @@ static int Video_ProcessOutput(decoder_t *p_dec, mc_api_out *p_out,
             p_pic->date = forced_ts;
         p_pic->b_progressive = true;
 
-        if (p_sys->api->b_direct_rendering)
+        if (p_sys->api.b_direct_rendering)
         {
-            p_pic->p_sys->priv.hw.i_index = p_out->buf.i_index;
+            p_pic->p_sys->hw.i_index = p_out->buf.i_index;
             InsertInflightPicture(p_dec, p_pic->p_sys);
         } else {
             unsigned int chroma_div;
@@ -1015,7 +1021,7 @@ static int Video_ProcessOutput(decoder_t *p_dec, mc_api_out *p_out,
                            p_sys->video.i_slice_height, p_sys->video.i_stride,
                            (uint8_t *)p_out->buf.p_ptr, chroma_div, NULL);
 
-            if (p_sys->api->release_out(p_sys->api, p_out->buf.i_index, false))
+            if (p_sys->api.release_out(&p_sys->api, p_out->buf.i_index, false))
             {
                 picture_Release(p_pic);
                 return -1;
@@ -1029,7 +1035,7 @@ static int Video_ProcessOutput(decoder_t *p_dec, mc_api_out *p_out,
         p_sys->video.i_pixel_format = p_out->conf.video.pixel_format;
 
         const char *name = "unknown";
-        if (!p_sys->api->b_direct_rendering
+        if (!p_sys->api.b_direct_rendering
          && !GetVlcChromaFormat(p_sys->video.i_pixel_format,
                                 &p_dec->fmt_out.i_codec, &name))
         {
@@ -1053,9 +1059,6 @@ static int Video_ProcessOutput(decoder_t *p_dec, mc_api_out *p_out,
             i_width = p_out->conf.video.width;
             i_height = p_out->conf.video.height;
         }
-        bool b_video_changed =
-            (unsigned) i_width != p_dec->fmt_out.video.i_width ||
-            (unsigned) i_height != p_dec->fmt_out.video.i_height;
 
         p_dec->fmt_out.video.i_visible_width =
         p_dec->fmt_out.video.i_width = i_width;
@@ -1071,33 +1074,14 @@ static int Video_ProcessOutput(decoder_t *p_dec, mc_api_out *p_out,
 
         if (p_sys->video.i_pixel_format == OMX_TI_COLOR_FormatYUV420PackedSemiPlanar)
             p_sys->video.i_slice_height -= p_out->conf.video.crop_top/2;
-        if ((p_sys->api->i_quirks & MC_API_VIDEO_QUIRKS_IGNORE_PADDING))
+        if ((p_sys->api.i_quirks & MC_API_VIDEO_QUIRKS_IGNORE_PADDING))
         {
             p_sys->video.i_slice_height = 0;
             p_sys->video.i_stride = p_dec->fmt_out.video.i_width;
         }
 
-        if (p_sys->api->b_direct_rendering)
-        {
-            if (b_video_changed)
-            {
-                /* p_surface/p_jsurface can change when the vout is updated */
-                if (UpdateOpaqueVout(p_dec) != VLC_SUCCESS)
-                    return -1;
-
-                if (p_sys->api->set_output_surface(p_sys->api,
-                        p_sys->video.p_surface, p_sys->video.p_jsurface) != 0)
-                {
-                    /* Corner case: not able to update directly the new surface
-                     * to MediaCodec: ask for a restart */
-                    msg_Warn(p_dec, "The vout changed and the output surface "
-                             "could not be updated: restarting MediaCodec");
-                    p_sys->i_decode_flags |= DECODE_FLAG_RESTART;
-                    return 0;
-                }
-            }
-        }
-        else if (decoder_UpdateVideoFormat(p_dec) != 0)
+        if (!p_sys->api.b_direct_rendering
+         && decoder_UpdateVideoFormat(p_dec) != 0)
         {
             msg_Err(p_dec, "decoder_UpdateVideoFormat failed");
             return -1;
@@ -1130,12 +1114,12 @@ static int Audio_ProcessOutput(decoder_t *p_dec, mc_api_out *p_out,
         {
             /* This can happen when receiving an EOS buffer */
             msg_Warn(p_dec, "Invalid buffer, dropping frame");
-            return p_sys->api->release_out(p_sys->api, p_out->buf.i_index, false);
+            return p_sys->api.release_out(&p_sys->api, p_out->buf.i_index, false);
         }
 
         if (!p_sys->b_has_format) {
             msg_Warn(p_dec, "Buffers returned before output format is set, dropping frame");
-            return p_sys->api->release_out(p_sys->api, p_out->buf.i_index, false);
+            return p_sys->api.release_out(&p_sys->api, p_out->buf.i_index, false);
         }
 
         p_block = block_Alloc(p_out->buf.i_size);
@@ -1164,7 +1148,7 @@ static int Audio_ProcessOutput(decoder_t *p_dec, mc_api_out *p_out,
                                            p_block->i_nb_samples)
                           - p_block->i_pts;
 
-        if (p_sys->api->release_out(p_sys->api, p_out->buf.i_index, false))
+        if (p_sys->api.release_out(&p_sys->api, p_out->buf.i_index, false))
         {
             block_Release(p_block);
             return -1;
@@ -1234,7 +1218,7 @@ static void DecodeFlushLocked(decoder_t *p_dec)
 
     p_sys->pf_on_flush(p_dec);
 
-    if (b_had_input && p_sys->api->flush(p_sys->api) != VLC_SUCCESS)
+    if (b_had_input && p_sys->api.flush(&p_sys->api) != VLC_SUCCESS)
     {
         AbortDecoderLocked(p_dec);
         return;
@@ -1284,7 +1268,7 @@ static void *OutThread(void *data)
 
         /* Wait for an output buffer. This function returns when a new output
          * is available or if output is flushed. */
-        i_index = p_sys->api->dequeue_out(p_sys->api, -1);
+        i_index = p_sys->api.dequeue_out(&p_sys->api, -1);
 
         vlc_mutex_lock(&p_sys->lock);
 
@@ -1294,7 +1278,7 @@ static void *OutThread(void *data)
             /* If i_index >= 0, Release it. There is no way to know if i_index
              * is owned by us, so don't check the error. */
             if (i_index >= 0)
-                p_sys->api->release_out(p_sys->api, i_index, false);
+                p_sys->api.release_out(&p_sys->api, i_index, false);
 
             /* Parse output format/buffers even when we are flushing */
             if (i_index != MC_API_INFO_OUTPUT_FORMAT_CHANGED
@@ -1310,7 +1294,7 @@ static void *OutThread(void *data)
          || i_index == MC_API_INFO_OUTPUT_BUFFERS_CHANGED)
         {
             struct mc_api_out out;
-            int i_ret = p_sys->api->get_out(p_sys->api, i_index, &out);
+            int i_ret = p_sys->api.get_out(&p_sys->api, i_index, &out);
 
             if (i_ret == 1)
             {
@@ -1441,7 +1425,7 @@ static int DecodeCommon(decoder_t *p_dec, block_t **pp_block)
         {
             StopMediaCodec(p_dec);
 
-            if (p_sys->api->b_direct_rendering
+            if (p_sys->api.b_direct_rendering
              && UpdateOpaqueVout(p_dec) != VLC_SUCCESS)
             {
                 msg_Err(p_dec, "UpdateOpaqueVout failed");
@@ -1466,7 +1450,7 @@ static int DecodeCommon(decoder_t *p_dec, block_t **pp_block)
     }
 
     /* Abort if MediaCodec is not yet started */
-    if (!p_sys->api->b_started)
+    if (!p_sys->api.b_started)
         goto end;
 
     /* Queue CSD blocks and input blocks */
@@ -1478,9 +1462,9 @@ static int DecodeCommon(decoder_t *p_dec, block_t **pp_block)
         vlc_mutex_unlock(&p_sys->lock);
         /* Wait for an input buffer. This function returns when a new input
          * buffer is available or after 1sec of timeout. */
-        i_index = p_sys->api->dequeue_in(p_sys->api,
-                                         p_sys->api->b_direct_rendering ?
-                                         INT64_C(1000000) : -1);
+        i_index = p_sys->api.dequeue_in(&p_sys->api,
+                                        p_sys->api.b_direct_rendering ?
+                                        INT64_C(1000000) : -1);
         vlc_mutex_lock(&p_sys->lock);
 
         if (p_sys->b_aborted)
@@ -1508,8 +1492,8 @@ static int DecodeCommon(decoder_t *p_dec, block_t **pp_block)
                 i_size = p_block->i_buffer;
             }
 
-            if (p_sys->api->queue_in(p_sys->api, i_index, p_buf, i_size,
-                                     i_ts, b_config) == 0)
+            if (p_sys->api.queue_in(&p_sys->api, i_index, p_buf, i_size,
+                                    i_ts, b_config) == 0)
             {
                 if (!b_config && p_block != NULL)
                 {
@@ -1618,7 +1602,7 @@ static int Video_OnNewBlock(decoder_t *p_dec, block_t **pp_block)
     block_t *p_block = *pp_block;
 
     if (p_block->i_flags & BLOCK_FLAG_INTERLACED_MASK
-        && !p_sys->api->b_support_interlaced)
+        && !p_sys->api.b_support_interlaced)
         return -1;
 
     timestamp_FifoPut(p_sys->video.timestamp_fifo,
@@ -1642,9 +1626,9 @@ static int VideoH264_OnNewBlock(decoder_t *p_dec, block_t **pp_block)
     } else if (H264SetCSD(p_dec, p_block->p_buffer, p_block->i_buffer,
                           &b_size_changed) == VLC_SUCCESS)
     {
-        if (b_size_changed || !p_sys->api->b_started)
+        if (b_size_changed || !p_sys->api.b_started)
         {
-            if (p_sys->api->b_started)
+            if (p_sys->api.b_started)
                 msg_Err(p_dec, "SPS/PPS changed during playback and "
                         "video size are different. Restart it !");
             p_sys->i_decode_flags |= DECODE_FLAG_RESTART;
@@ -1698,7 +1682,7 @@ static void Video_OnFlush(decoder_t *p_dec)
     /* Invalidate all pictures that are currently in flight
      * since flushing make all previous indices returned by
      * MediaCodec invalid. */
-    if (p_sys->api->b_direct_rendering)
+    if (p_sys->api.b_direct_rendering)
         InvalidateAllPictures(p_dec);
 }
 

@@ -159,7 +159,7 @@ case "${host_os}" in
     CXX="${CXX} -stdlib=libc++ -std=c++11"
     CXXFLAGS="${CXXFLAGS} -D_INTL_REDIRECT_MACROS ${ARCH_flag}"
     CPPFLAGS="${CPPFLAGS} ${ARCH_flag}"
-    OBJCFLAGS="${OBJCFLAGS} -D_INTL_REDIRECT_MACROS -std=gnu11 ${ARCH_flag}"
+    OBJCFLAGS="${OBJCFLAGS} -D_INTL_REDIRECT_MACROS -std=gnu11 ${ARCH_flag} -Werror=partial-availability"
     LDFLAGS="${LDFLAGS} -Wl,-headerpad_max_install_names ${ARCH_flag}"
     VLC_ADD_LIBS([libvlc vlc],[-Wl,-undefined,dynamic_lookup,-framework,AppKit])
     VLC_ADD_LIBS([libvlccore],[-Wl,-framework,CoreFoundation,-framework,CoreServices])
@@ -341,6 +341,7 @@ dnl for program foo on win32
 case "${build_os}" in
     cygwin|msys|mingw32)
         ac_executable_extensions=".exe"
+        BUILDEXEEXT=".exe"
     ;;
     os2*)
         BUILDEXEEXT=".exe"
@@ -439,13 +440,13 @@ AS_IF([test -n "${CONTRIB_DIR}"], [
 
   AS_IF([test -z "$LUAC"], [
     dnl Old contribs mixed cross-tools and cross-compiled executables
-    AS_IF([test -x "${CONTRIB_DIR}/bin/luac"], [
-      LUAC="${CONTRIB_DIR}/bin/luac"
+    AS_IF([test -x "${CONTRIB_DIR}/bin/luac${BUILDEXEEXT}"], [
+      LUAC="${CONTRIB_DIR}/bin/luac${BUILDEXEEXT}"
     ])
 
     dnl Newer contribs follow usual name space rules
-    AS_IF([test -x "${CONTRIB_DIR}/../bin/${host_alias}-luac"], [
-      LUAC="${CONTRIB_DIR}/../bin/${host_alias}-luac"
+    AS_IF([test -x "${CONTRIB_DIR}/../bin/${host_alias}-luac${BUILDEXEEXT}"], [
+      LUAC="${CONTRIB_DIR}/../bin/${host_alias}-luac${BUILDEXEEXT}"
     ])
   ])
 
@@ -3002,6 +3003,7 @@ have_gl="no"
 PKG_CHECK_MODULES([GL], [gl], [
   have_gl="yes"
 ], [
+  AC_MSG_CHECKING([for OpenGL])
   AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
 #ifdef _WIN32
 # include <GL/glew.h>
@@ -3018,6 +3020,7 @@ PKG_CHECK_MODULES([GL], [gl], [
       GL_LIBS="-lopengl32"
     ])
   ])
+  AC_MSG_RESULT([${have_gl}])
 ])
 AM_CONDITIONAL([HAVE_GL], [test "${have_gl}" = "yes"])
 

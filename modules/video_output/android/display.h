@@ -38,8 +38,6 @@
 
 struct picture_sys_t
 {
-    vout_display_sys_t *p_vd_sys;
-
     union {
         struct {
             void *p_surface;
@@ -47,56 +45,79 @@ struct picture_sys_t
 
             vlc_mutex_t lock;
             decoder_t *p_dec;
+            bool b_vd_ref;
             int i_index;
             void (*pf_release)(decoder_t *p_dec, unsigned int i_index,
                                bool b_render);
         } hw;
         struct {
+            vout_display_sys_t *p_vd_sys;
             void *p_handle;
             ANativeWindow_Buffer buf;
         } sw;
-    } priv;
+    };
     bool b_locked;
 };
 
 static inline void
 AndroidOpaquePicture_DetachDecoder(picture_sys_t *p_picsys)
 {
-    vlc_mutex_lock(&p_picsys->priv.hw.lock);
-    if (p_picsys->priv.hw.i_index >= 0)
+    vlc_mutex_lock(&p_picsys->hw.lock);
+    if (p_picsys->hw.i_index >= 0)
     {
-        assert(p_picsys->priv.hw.pf_release && p_picsys->priv.hw.p_dec);
-        p_picsys->priv.hw.pf_release(p_picsys->priv.hw.p_dec,
-                                     (unsigned int) p_picsys->priv.hw.i_index,
+        assert(p_picsys->hw.pf_release && p_picsys->hw.p_dec);
+        p_picsys->hw.pf_release(p_picsys->hw.p_dec,
+                                     (unsigned int) p_picsys->hw.i_index,
                                      false);
-        p_picsys->priv.hw.i_index = -1;
+        p_picsys->hw.i_index = -1;
     }
-    p_picsys->priv.hw.pf_release = NULL;
-    p_picsys->priv.hw.p_dec = NULL;
+    p_picsys->hw.pf_release = NULL;
+    p_picsys->hw.p_dec = NULL;
     /* Release p_picsys if references from VOUT and from decoder are NULL */
-    if (!p_picsys->p_vd_sys && !p_picsys->priv.hw.p_dec)
+    if (!p_picsys->hw.b_vd_ref && !p_picsys->hw.p_dec)
     {
-        vlc_mutex_unlock(&p_picsys->priv.hw.lock);
-        vlc_mutex_destroy(&p_picsys->priv.hw.lock);
+        vlc_mutex_unlock(&p_picsys->hw.lock);
+        vlc_mutex_destroy(&p_picsys->hw.lock);
         free(p_picsys);
     }
     else
-        vlc_mutex_unlock(&p_picsys->priv.hw.lock);
+        vlc_mutex_unlock(&p_picsys->hw.lock);
+}
+
+static inline void AndroidOpaquePicture_DetachVout(picture_t *p_pic)
+{
+    picture_sys_t *p_picsys = p_pic->p_sys;
+
+    vlc_mutex_lock(&p_picsys->hw.lock);
+    p_picsys->hw.b_vd_ref = false;
+    /* Release p_picsys if references from VOUT and from decoder are NULL */
+    if (!p_picsys->hw.b_vd_ref && !p_picsys->hw.p_dec)
+    {
+        vlc_mutex_unlock(&p_picsys->hw.lock);
+        vlc_mutex_destroy(&p_picsys->hw.lock);
+        free(p_picsys);
+    }
+    else
+        vlc_mutex_unlock(&p_picsys->hw.lock);
+    free(p_pic);
 }
 
 static inline void
 AndroidOpaquePicture_Release(picture_sys_t *p_picsys, bool b_render)
 {
-    vlc_mutex_lock(&p_picsys->priv.hw.lock);
-    if (p_picsys->priv.hw.i_index >= 0)
+    if (!p_picsys->b_locked)
+        return;
+    vlc_mutex_lock(&p_picsys->hw.lock);
+    if (p_picsys->hw.i_index >= 0)
     {
-        assert(p_picsys->priv.hw.pf_release && p_picsys->priv.hw.p_dec);
-        p_picsys->priv.hw.pf_release(p_picsys->priv.hw.p_dec,
-                                     (unsigned int) p_picsys->priv.hw.i_index,
+        assert(p_picsys->hw.pf_release && p_picsys->hw.p_dec);
+        p_picsys->hw.pf_release(p_picsys->hw.p_dec,
+                                     (unsigned int) p_picsys->hw.i_index,
                                      b_render);
-        p_picsys->priv.hw.i_index = -1;
+        p_picsys->hw.i_index = -1;
     }
-    vlc_mutex_unlock(&p_picsys->priv.hw.lock);
+    vlc_mutex_unlock(&p_picsys->hw.lock);
+    p_picsys->b_locked = false;
 }
 
 #endif

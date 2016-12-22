@@ -256,8 +256,8 @@ static int Open(vlc_object_t *this)
         if (!sys->zero_copy) {
             msg_Dbg(vd, "will use regular OpenGL rendering");
             /* Initialize common OpenGL video display */
-            sys->gl.lock = OpenglESClean;
-            sys->gl.unlock = nil;
+            sys->gl.makeCurrent = OpenglESClean;
+            sys->gl.releaseCurrent = OpenglESNoop;
             sys->gl.swap = OpenglESSwap;
             sys->gl.getProcAddress = OurGetProcAddress;
             sys->gl.sys = sys;
@@ -301,7 +301,6 @@ static int Open(vlc_object_t *this)
             scaleFactor = sys->viewContainer.contentScaleFactor;
             viewSize = sys->viewContainer.bounds.size;
         }
-        vout_display_SendEventFullscreen(vd, false);
         vout_display_SendEventDisplaySize(vd, viewSize.width * scaleFactor, viewSize.height * scaleFactor);
 
         /* */
@@ -588,6 +587,76 @@ static void ZeroCopyDisplay(vout_display_t *vd, picture_t *pic, subpicture_t *su
 
     if (subpicture)
         subpicture_Delete(subpicture);
+}
+
+static void orientationTransformMatrix(GLfloat matrix[static 16],
+                                       video_orientation_t orientation)
+{
+    static const GLfloat identity[] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f
+    };
+    memcpy(matrix, identity, sizeof(identity));
+
+    const int k_cos_pi = -1;
+    const int k_cos_pi_2 = 0;
+    const int k_cos_n_pi_2 = 0;
+
+    const int k_sin_pi = 0;
+    const int k_sin_pi_2 = 1;
+    const int k_sin_n_pi_2 = -1;
+
+    bool rotate = false;
+    int cos = 0, sin = 0;
+
+    switch (orientation) {
+
+        case ORIENT_ROTATED_90:
+            cos = k_cos_pi_2;
+            sin = k_sin_pi_2;
+            rotate = true;
+            break;
+        case ORIENT_ROTATED_180:
+            cos = k_cos_pi;
+            sin = k_sin_pi;
+            rotate = true;
+            break;
+        case ORIENT_ROTATED_270:
+            cos = k_cos_n_pi_2;
+            sin = k_sin_n_pi_2;
+            rotate = true;
+            break;
+        case ORIENT_HFLIPPED:
+            matrix[0 * 4 + 0] = -1;
+            break;
+        case ORIENT_VFLIPPED:
+            matrix[1 * 4 + 1] = -1;
+            break;
+        case ORIENT_TRANSPOSED:
+            matrix[0 * 4 + 0] = 0;
+            matrix[0 * 4 + 1] = -1;
+            matrix[1 * 4 + 0] = -1;
+            matrix[1 * 4 + 1] = 0;
+            break;
+        case ORIENT_ANTI_TRANSPOSED:
+            matrix[0 * 4 + 0] = 0;
+            matrix[0 * 4 + 1] = 1;
+            matrix[1 * 4 + 0] = 1;
+            matrix[1 * 4 + 1] = 0;
+            break;
+        default:
+            break;
+    }
+
+    if (rotate) {
+
+        matrix[0 * 4 + 0] = cos;
+        matrix[0 * 4 + 1] = -sin;
+        matrix[1 * 4 + 0] = sin;
+        matrix[1 * 4 + 1] = cos;
+    }
 }
 
 /*****************************************************************************

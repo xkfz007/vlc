@@ -376,6 +376,9 @@
 #pragma mark Helpers
 
 #ifdef MAC_OS_X_VERSION_10_10
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wpartial-availability"
+
 /**
  Create an image mask for the NSVisualEffectView
  with rounded corners in the given rect
@@ -426,6 +429,7 @@
     [_controlsView setAppearance:[NSAppearance appearanceNamed:NSAppearanceNameVibrantDark]];
     [self.window.contentView addSubview:_controlsView];
 }
+#pragma clang diagnostic pop
 #endif
 
 /**

@@ -30,6 +30,7 @@
 
 #import <Foundation/Foundation.h>
 #import <Security/Security.h>
+#import <Cocoa/Cocoa.h>
 
 static int Open(vlc_object_t *);
 
@@ -203,9 +204,15 @@ static NSString * ErrorForStatus(OSStatus status)
     return message;
 }
 
+#define OSX_MAVERICKS (NSAppKitVersionNumber >= 1265)
+extern const CFStringRef kSecAttrAccessible;
+
 static void SetAccessibilityForQuery(vlc_keystore *p_keystore,
                                      NSMutableDictionary *query)
 {
+    if (!OSX_MAVERICKS)
+	return;
+
     int accessibilityType = var_InheritInteger(p_keystore, "keychain-accessibility-type");
     switch (accessibilityType) {
         case 1:
@@ -368,7 +375,7 @@ static unsigned int Find(vlc_keystore *p_keystore,
             return 0;
         }
 
-        SecKeychainItemRef itemRef = (__bridge SecKeychainItemRef)(listOfResults[i]);
+        SecKeychainItemRef itemRef = (__bridge SecKeychainItemRef)([listOfResults objectAtIndex:i]);
 
         SecKeychainAttributeInfo attrInfo;
 
@@ -446,7 +453,7 @@ static unsigned int Remove(vlc_keystore *p_keystore,
         matchCount = matches.count;
 
         for (NSUInteger x = 0; x < matchCount; x++) {
-            status = SecKeychainItemDelete((__bridge SecKeychainItemRef _Nonnull)(matches[x]));
+            status = SecKeychainItemDelete((__bridge SecKeychainItemRef _Nonnull)([matches objectAtIndex:x]));
             if (status != noErr) {
                 msg_Err(p_keystore, "Deletion error %i (%s)", status , [ErrorForStatus(status) UTF8String]);
                 failed = YES;

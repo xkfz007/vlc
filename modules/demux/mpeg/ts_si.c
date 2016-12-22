@@ -377,7 +377,6 @@ static void EITCallBack( demux_t *p_demux, dvbpsi_eit_t *p_eit )
     demux_sys_t        *p_sys = p_demux->p_sys;
     dvbpsi_eit_event_t *p_evt;
     vlc_epg_t *p_epg;
-    //bool b_current_following = (p_eit->i_table_id == 0x4e);
 
     msg_Dbg( p_demux, "EITCallBack called" );
     if( !p_eit->b_current_next )
@@ -394,7 +393,17 @@ static void EITCallBack( demux_t *p_demux, dvbpsi_eit_t *p_eit )
              p_eit->i_ts_id, p_eit->i_network_id,
              p_eit->i_segment_last_section_number, p_eit->i_last_table_id );
 
+    /* Use table ID for segmenting our EPG tables updates. 1 table id has 256 sections which
+     * represents 8 segements of 32 sections each. Thus a max of 24 hours per table ID
+     * (Should be even better with tableid+segmentid compound if dvbpsi would export segment id)
+     * see TS 101 211, 4.1.4.2.1 */
     p_epg = vlc_epg_New( p_eit->i_table_id, p_eit->i_extension );
+    if( !p_epg )
+    {
+        dvbpsi_eit_delete( p_eit );
+        return;
+    }
+
     for( p_evt = p_eit->p_first_event; p_evt; p_evt = p_evt->p_next )
     {
         dvbpsi_descriptor_t *p_dr;
@@ -571,7 +580,7 @@ static void EITCallBack( demux_t *p_demux, dvbpsi_eit_t *p_eit )
                     vlc_epg_event_Delete( p_epgevt );
 
                 /* Update "now playing" field */
-                if( b_current_event )
+                if( b_current_event && p_epg->p_current == NULL )
                     vlc_epg_SetCurrent( p_epg, i_start );
             }
         }
@@ -584,7 +593,7 @@ static void EITCallBack( demux_t *p_demux, dvbpsi_eit_t *p_eit )
 
     if( p_epg->i_event > 0 )
     {
-        if( p_epg->p_current )
+        if( p_epg->b_present && p_epg->p_current )
         {
             ts_pat_t *p_pat = ts_pid_Get(&p_sys->pids, 0)->u.p_pat;
             ts_pmt_t *p_pmt = ts_pat_Get_pmt(p_pat, p_eit->i_extension);
@@ -594,6 +603,7 @@ static void EITCallBack( demux_t *p_demux, dvbpsi_eit_t *p_eit )
                 p_pmt->eit.i_event_length = p_epg->p_current->i_duration;
             }
         }
+        p_epg->b_present = (p_eit->i_table_id == 0x4e);
         es_out_Control( p_demux->out, ES_OUT_SET_GROUP_EPG, p_eit->i_extension, p_epg );
     }
     vlc_epg_Delete( p_epg );
@@ -608,14 +618,11 @@ static void SINewTableCallBack( dvbpsi_t *h, uint8_t i_table_id,
     ts_pid_t *p_pid = (ts_pid_t *) p_pid_cbdata;
     demux_t *p_demux = (demux_t *) h->p_sys;
 #if 0
-    msg_Dbg( p_demux, "SINewTableCallback: table 0x%x(%d) ext=0x%x(%d) pid=0x%x",
-             i_table_id, i_table_id, i_extension, i_extension, p_pid->i_pid );
+    msg_Dbg( p_demux, "SINewTableCallback: table 0x%"PRIx8"(%"PRIu16") ext=0x%"PRIx16"(%"PRIu16")",
+             i_table_id, i_table_id, i_extension, i_extension );
 #endif
     if( p_pid->i_pid == TS_SI_SDT_PID && i_table_id == 0x42 )
     {
-        msg_Dbg( p_demux, "SINewTableCallback: table 0x%"PRIx8"(%"PRIu16") ext=0x%"PRIx16"(%"PRIu16")",
-                 i_table_id, i_table_id, i_extension, i_extension );
-
         if( !dvbpsi_sdt_attach( h, i_table_id, i_extension, (dvbpsi_sdt_callback)SDTCallBack, p_demux ) )
             msg_Err( p_demux, "SINewTableCallback: failed attaching SDTCallback" );
     }
@@ -623,9 +630,6 @@ static void SINewTableCallBack( dvbpsi_t *h, uint8_t i_table_id,
              ( i_table_id == 0x4e || /* Current/Following */
                (i_table_id >= 0x50 && i_table_id <= 0x5f) ) ) /* Schedule */
     {
-        msg_Dbg( p_demux, "SINewTableCallback: table 0x%"PRIx8"(%"PRIu16") ext=0x%"PRIx16"(%"PRIu16")",
-                 i_table_id, i_table_id, i_extension, i_extension );
-
         /* Do not attach decoders if we can't decode timestamps */
         if( p_demux->p_sys->i_network_time > 0 )
         {
@@ -637,9 +641,6 @@ static void SINewTableCallBack( dvbpsi_t *h, uint8_t i_table_id,
     else if( p_pid->i_pid == TS_SI_TDT_PID &&
             (i_table_id == TS_SI_TDT_TABLE_ID || i_table_id == TS_SI_TOT_TABLE_ID) )
     {
-         msg_Dbg( p_demux, "SINewTableCallBack: table 0x%"PRIx8"(%"PRIu16") ext=0x%"PRIx16"(%"PRIu16")",
-                 i_table_id, i_table_id, i_extension, i_extension );
-
         if( !dvbpsi_tot_attach( h, i_table_id, i_extension, (dvbpsi_tot_callback)TDTCallBack, p_demux ) )
             msg_Err( p_demux, "SINewTableCallback: failed attaching TDTCallback" );
     }

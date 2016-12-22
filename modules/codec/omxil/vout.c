@@ -329,9 +329,6 @@ static int Open(vlc_object_t *p_this)
         goto error;
     }
 
-    /* Fix initial state */
-    vout_display_SendEventFullscreen(vd, true);
-
     free(pictures);
     return VLC_SUCCESS;
 
@@ -461,7 +458,6 @@ static int Control(vout_display_t *vd, int query, va_list args)
         return VLC_SUCCESS;
     }
     case VOUT_DISPLAY_CHANGE_FULLSCREEN:
-    case VOUT_DISPLAY_CHANGE_WINDOW_STATE:
     case VOUT_DISPLAY_CHANGE_DISPLAY_FILLED:
     case VOUT_DISPLAY_CHANGE_ZOOM:
     case VOUT_DISPLAY_CHANGE_SOURCE_CROP:

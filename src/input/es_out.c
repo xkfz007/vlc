@@ -1059,7 +1059,9 @@ static void EsOutProgramSelect( es_out_t *out, es_out_pgrm_t *p_pgrm )
                                 p_pgrm->p_meta ? vlc_meta_Get( p_pgrm->p_meta, vlc_meta_ESNowPlaying ) : NULL );
     input_item_SetPublisher( input_priv(p_input)->p_item,
                              p_pgrm->p_meta ? vlc_meta_Get( p_pgrm->p_meta, vlc_meta_Publisher ) : NULL);
-
+    input_item_SetTitle( input_priv(p_input)->p_item,
+                         p_pgrm->p_meta ? vlc_meta_Get( p_pgrm->p_meta, vlc_meta_Title ) : NULL );
+    /* FIXME: we probably want to replace every input meta */
     input_SendEventMeta( p_input );
 }
 
@@ -1315,6 +1317,23 @@ static void EsOutProgramMeta( es_out_t *out, int i_group, const vlc_meta_t *p_me
         input_Control( p_input, INPUT_MERGE_INFOS, p_cat );
 }
 
+static void EsOutProgramEpgEvent( es_out_t *out, int i_group, const vlc_epg_event_t *p_event )
+{
+    es_out_sys_t      *p_sys = out->p_sys;
+    input_thread_t    *p_input = p_sys->p_input;
+    input_item_t      *p_item = input_priv(p_input)->p_item;
+    es_out_pgrm_t     *p_pgrm;
+
+    /* Find program */
+    if( !EsOutIsProgramVisible( out, i_group ) )
+        return;
+    p_pgrm = EsOutProgramFind( out, i_group );
+    if( !p_pgrm )
+        return;
+
+    input_item_SetEpgEvent( p_item, p_event );
+}
+
 static void EsOutProgramEpg( es_out_t *out, int i_group, const vlc_epg_t *p_epg )
 {
     es_out_sys_t      *p_sys = out->p_sys;
@@ -1344,10 +1363,10 @@ static void EsOutProgramEpg( es_out_t *out, int i_group, const vlc_epg_t *p_epg 
     input_SendEventMetaEpg( p_sys->p_input );
 
     /* Update now playing */
-    if( p_epg->p_current || p_epg->i_event == 0 )
+    if( p_epg->b_present && p_pgrm->p_meta &&
+       ( p_epg->p_current || p_epg->i_event == 0 ) )
     {
-        if( p_pgrm->p_meta )
-            vlc_meta_SetNowPlaying( p_pgrm->p_meta, NULL );
+        vlc_meta_SetNowPlaying( p_pgrm->p_meta, NULL );
     }
 
     vlc_mutex_lock( &p_item->lock );
@@ -1355,7 +1374,7 @@ static void EsOutProgramEpg( es_out_t *out, int i_group, const vlc_epg_t *p_epg 
     {
         const vlc_epg_t *p_tmp = p_item->pp_epg[i];
 
-        if( p_tmp->i_source_id == p_pgrm->i_id )
+        if( p_tmp->b_present && p_tmp->i_source_id == p_pgrm->i_id )
         {
             const char *psz_name = ( p_tmp->p_current ) ? p_tmp->p_current->psz_name : NULL;
             if( !p_pgrm->p_meta )
@@ -1367,23 +1386,25 @@ static void EsOutProgramEpg( es_out_t *out, int i_group, const vlc_epg_t *p_epg 
     }
     vlc_mutex_unlock( &p_item->lock );
 
-    const char *psz_nowplaying = p_pgrm->p_meta ?
-                                 vlc_meta_Get( p_pgrm->p_meta, vlc_meta_ESNowPlaying ) : NULL;
+    /* Update selected program input info */
     if( p_pgrm == p_sys->p_pgrm )
     {
+        const char *psz_nowplaying = p_pgrm->p_meta ?
+                                     vlc_meta_Get( p_pgrm->p_meta, vlc_meta_ESNowPlaying ) : NULL;
+
         input_item_SetESNowPlaying( input_priv(p_input)->p_item, psz_nowplaying );
         input_SendEventMeta( p_input );
-    }
 
-    if( psz_nowplaying )
-    {
-        input_Control( p_input, INPUT_ADD_INFO, psz_cat,
-            vlc_meta_TypeToLocalizedString(vlc_meta_ESNowPlaying), "%s", psz_nowplaying );
-    }
-    else
-    {
-        input_Control( p_input, INPUT_DEL_INFO, psz_cat,
-            vlc_meta_TypeToLocalizedString(vlc_meta_ESNowPlaying) );
+        if( psz_nowplaying )
+        {
+            input_Control( p_input, INPUT_ADD_INFO, psz_cat,
+                vlc_meta_TypeToLocalizedString(vlc_meta_ESNowPlaying), "%s", psz_nowplaying );
+        }
+        else
+        {
+            input_Control( p_input, INPUT_DEL_INFO, psz_cat,
+                vlc_meta_TypeToLocalizedString(vlc_meta_ESNowPlaying) );
+        }
     }
 
     free( psz_cat );
@@ -2461,6 +2482,14 @@ static int EsOutControlLocked( es_out_t *out, int i_query, va_list args )
         const vlc_epg_t *p_epg = va_arg( args, const vlc_epg_t * );
 
         EsOutProgramEpg( out, i_group, p_epg );
+        return VLC_SUCCESS;
+    }
+    case ES_OUT_SET_GROUP_EPG_EVENT:
+    {
+        int i_group = (int)va_arg( args, int );
+        const vlc_epg_event_t *p_evt = va_arg( args, const vlc_epg_event_t * );
+
+        EsOutProgramEpgEvent( out, i_group, p_evt );
         return VLC_SUCCESS;
     }
 
