@@ -159,11 +159,9 @@ static void Close( vlc_object_t *p_this )
     vlc_cancel( p_sys->thread );
     vlc_join( p_sys->thread, NULL );
 
-    if( p_sys->p_map )
-    {
-        free( p_sys->p_map->p_keys );
-        free( p_sys->p_map );
-    }
+    for( int i = 0; i < p_sys->i_map; i++ )
+        free( p_sys->p_map[i].p_keys );
+    free( p_sys->p_map );
     xcb_key_symbols_free( p_sys->p_symbols );
     xcb_disconnect( p_sys->p_connection );
     free( p_sys );
@@ -327,15 +325,16 @@ static bool Mapping( intf_thread_t *p_intf )
             if( i != 0 && i_ignored == 0)
                 continue;
 
-            hotkey_mapping_t *p_map_old = p_sys->p_map;
-            p_sys->p_map = realloc( p_sys->p_map,
-                    sizeof(*p_sys->p_map) * (p_sys->i_map+1) );
-            if( !p_sys->p_map )
+            hotkey_mapping_t *p_map = realloc( p_sys->p_map,
+                              sizeof(*p_sys->p_map) * (p_sys->i_map+1) );
+            if( !p_map )
             {
-                p_sys->p_map = p_map_old;
+                free( p_keys );
                 break;
             }
-            hotkey_mapping_t *p_map = &p_sys->p_map[p_sys->i_map++];
+            p_sys->p_map = p_map;
+            p_map += p_sys->i_map;
+            p_sys->i_map++;
 
             p_map->p_keys = p_keys;
             p_map->i_modifier = i_modifier|i_ignored;
