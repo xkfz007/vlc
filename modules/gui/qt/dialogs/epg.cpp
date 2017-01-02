@@ -76,8 +76,9 @@ EpgDialog::EpgDialog( intf_thread_t *_p_intf ): QVLCFrame( _p_intf )
     layout->addWidget( descBox );
 
     CONNECT( epg, itemSelectionChanged( EPGItem *), this, displayEvent( EPGItem *) );
+    CONNECT( epg, programActivated(int), THEMIM->getIM(), changeProgram(int) );
     CONNECT( THEMIM->getIM(), epgChanged(), this, scheduleUpdate() );
-    CONNECT( THEMIM, inputChanged( bool ), this, updateInfos() );
+    CONNECT( THEMIM, inputChanged( bool ), this, inputChanged() );
 
     QDialogButtonBox *buttonsBox = new QDialogButtonBox( this );
 
@@ -117,6 +118,12 @@ void EpgDialog::timeout()
         scheduleUpdate();
     else
         updateInfos();
+}
+
+void EpgDialog::inputChanged()
+{
+    epg->reset();
+    timeout();
 }
 
 void EpgDialog::scheduleUpdate()
@@ -172,6 +179,10 @@ void EpgDialog::updateInfos()
         {
             epg->updateEPG( p_input_item );
             vlc_gc_decref( p_input_item );
+        }
+        else
+        {
+            epg->reset();
         }
     }
 }

@@ -31,6 +31,7 @@
 #include <QScrollBar>
 #include <QLabel>
 #include <QStringList>
+#include <QDateTime>
 
 #include "EPGWidget.hpp"
 #include "EPGRuler.hpp"
@@ -79,6 +80,7 @@ EPGWidget::EPGWidget( QWidget *parent ) : QWidget( parent )
     connect( m_epgView, SIGNAL( itemFocused(EPGItem*)),
              this, SIGNAL(itemSelectionChanged(EPGItem*)) );
     CONNECT( m_epgView, programAdded(const EPGProgram *), m_channelsWidget, addProgram(const EPGProgram *) );
+    CONNECT( m_epgView, programActivated(int), this, activateProgram(int) );
 }
 
 void EPGWidget::reset()
@@ -107,6 +109,9 @@ void EPGWidget::updateEPG( input_item_t *p_input_item )
     /* Fixme: input could have dissapeared */
     vlc_mutex_lock(  & p_input_item->lock );
     m_epgView->updateEPG( p_input_item->pp_epg, p_input_item->i_epg );
+    m_epgView->setEpgTime( ( p_input_item->i_epg_time ) ?
+                           QDateTime::fromTime_t( p_input_item->i_epg_time ) :
+                           QDateTime() );
     vlc_mutex_unlock( & p_input_item->lock );
 
     /* toggle our widget view */
@@ -116,3 +121,7 @@ void EPGWidget::updateEPG( input_item_t *p_input_item )
     m_epgView->cleanup();
 }
 
+void EPGWidget::activateProgram( int id )
+{
+    emit programActivated( id );
+}

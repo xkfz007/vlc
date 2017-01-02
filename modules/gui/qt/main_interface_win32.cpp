@@ -5,6 +5,7 @@
  * $Id$
  *
  * Authors: Jean-Baptiste Kempf <jb@videolan.org>
+ *          Hugo Beauzée-Luyssen <hugo@beauzee.fr>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -21,8 +22,11 @@
  * 51 Franklin Street, Fifth Floor, Boston MA 02110-1301, USA.
  *****************************************************************************/
 
+#if HAVE_CONFIG_H
+# include "config.h"
+#endif
 
-#include "main_interface.hpp"
+#include "main_interface_win32.hpp"
 
 #include "input_manager.hpp"
 #include "actions_manager.hpp"
@@ -33,11 +37,10 @@
 
 #include <assert.h>
 
-#if defined(_WIN32) && HAS_QT5
+#if HAS_QT5
 # include <QWindow>
 # include <qpa/qplatformnativeinterface.h>
 #endif
-
 
 #define WM_APPCOMMAND 0x0319
 
@@ -80,7 +83,28 @@
 #define GET_FLAGS_LPARAM(lParam)      (LOWORD(lParam))
 #define GET_KEYSTATE_LPARAM(lParam)   GET_FLAGS_LPARAM(lParam)
 
-HWND MainInterface::WinId( QWidget *w )
+MainInterfaceWin32::MainInterfaceWin32( intf_thread_t *_p_intf )
+    : MainInterface( _p_intf )
+    , himl( NULL )
+    , p_taskbl( NULL )
+{
+    /* Volume keys */
+    _p_intf->p_sys->disable_volume_keys = var_InheritBool( _p_intf, "qt-disable-volume-keys" );
+    taskbar_wmsg = RegisterWindowMessage(TEXT("TaskbarButtonCreated"));
+    if (taskbar_wmsg == 0)
+        msg_Warn( p_intf, "Failed to register TaskbarButtonCreated message" );
+}
+
+MainInterfaceWin32::~MainInterfaceWin32()
+{
+    if( himl )
+        ImageList_Destroy( himl );
+    if(p_taskbl)
+        p_taskbl->Release();
+    CoUninitialize();
+}
+
+HWND MainInterfaceWin32::WinId( QWidget *w )
 {
 #if HAS_QT5
     if( w && w->windowHandle() )
@@ -93,7 +117,7 @@ HWND MainInterface::WinId( QWidget *w )
 #endif
 }
 
-#if defined(_WIN32) && !HAS_QT5
+#if !HAS_QT5
 static const int PremultipliedAlpha = QPixmap::PremultipliedAlpha;
 static HBITMAP qt_pixmapToWinHBITMAP(const QPixmap &p, int hbitmapFormat = 0)
 {
@@ -109,11 +133,10 @@ enum HBitmapFormat
 };
 #endif
 
-void MainInterface::createTaskBarButtons()
+void MainInterfaceWin32::createTaskBarButtons()
 {
     /*Here is the code for the taskbar thumb buttons
     FIXME:We need pretty buttons in 16x16 px that are handled correctly by masks in Qt
-    FIXME:the play button's picture doesn't changed to pause when clicked
     */
     p_taskbl = NULL;
     himl = NULL;
@@ -170,17 +193,17 @@ void MainInterface::createTaskBarButtons()
     thbButtons[0].dwMask = dwMask;
     thbButtons[0].iId = 0;
     thbButtons[0].iBitmap = 0;
-    thbButtons[0].dwFlags = THBF_HIDDEN;
+    thbButtons[0].dwFlags = THEPL->items.i_size > 1 ? THBF_ENABLED : THBF_HIDDEN;
 
     thbButtons[1].dwMask = dwMask;
     thbButtons[1].iId = 1;
     thbButtons[1].iBitmap = 2;
-    thbButtons[1].dwFlags = THBF_HIDDEN;
+    thbButtons[1].dwFlags = THEPL->items.i_size > 0 ? THBF_ENABLED : THBF_HIDDEN;
 
     thbButtons[2].dwMask = dwMask;
     thbButtons[2].iId = 2;
     thbButtons[2].iBitmap = 3;
-    thbButtons[2].dwFlags = THBF_HIDDEN;
+    thbButtons[2].dwFlags = THEPL->items.i_size > 1 ? THBF_ENABLED : THBF_HIDDEN;
 
     hr = p_taskbl->ThumbBarSetImageList( WinId(this), himl );
     if( FAILED(hr) )
@@ -195,9 +218,22 @@ void MainInterface::createTaskBarButtons()
     }
     CONNECT( THEMIM->getIM(), playingStatusChanged( int ),
              this, changeThumbbarButtons( int ) );
+    CONNECT( THEMIM, playlistItemAppended( int, int ),
+            this, playlistItemAppended( int, int ) );
+    CONNECT( THEMIM, playlistItemRemoved( int ),
+            this, playlistItemRemoved( int ) );
+    if( THEMIM->getIM()->playingStatus() == PLAYING_S )
+        changeThumbbarButtons( THEMIM->getIM()->playingStatus() );
 }
 
-bool MainInterface::winEvent ( MSG * msg, long * result )
+#if HAS_QT5
+bool MainInterfaceWin32::nativeEvent(const QByteArray &, void *message, long *result)
+{
+    return winEvent( static_cast<MSG*>( message ), result );
+}
+#endif
+
+bool MainInterfaceWin32::winEvent ( MSG * msg, long * result )
 {
     if (msg->message == taskbar_wmsg)
     {
@@ -295,7 +331,58 @@ bool MainInterface::winEvent ( MSG * msg, long * result )
     return false;
 }
 
-void MainInterface::changeThumbbarButtons( int i_status )
+void MainInterfaceWin32::setVideoFullScreen( bool fs )
+{
+    MainInterface::setVideoFullScreen( fs );
+    if( !fs )
+        changeThumbbarButtons( THEMIM->getIM()->playingStatus() );
+}
+
+void MainInterfaceWin32::toggleUpdateSystrayMenuWhenVisible()
+{
+    /* check if any visible window is above vlc in the z-order,
+     * but ignore the ones always on top
+     * and the ones which can't be activated */
+    HWND winId;
+#if HAS_QT5
+    QWindow *window = windowHandle();
+    winId = static_cast<HWND>(QGuiApplication::platformNativeInterface()->nativeResourceForWindow("handle", window));
+#else
+    winId = internalWinId();
+#endif
+
+    WINDOWINFO wi;
+    HWND hwnd;
+    wi.cbSize = sizeof( WINDOWINFO );
+    for( hwnd = GetNextWindow( winId, GW_HWNDPREV );
+            hwnd && ( !IsWindowVisible( hwnd ) || ( GetWindowInfo( hwnd, &wi ) &&
+                                                    ( wi.dwExStyle&WS_EX_NOACTIVATE ) ) );
+            hwnd = GetNextWindow( hwnd, GW_HWNDPREV ) )
+    {
+    }
+    if( !hwnd || !GetWindowInfo( hwnd, &wi ) || (wi.dwExStyle&WS_EX_TOPMOST) )
+        hide();
+    else
+        activateWindow();
+}
+
+void MainInterfaceWin32::reloadPrefs()
+{
+    p_intf->p_sys->disable_volume_keys = var_InheritBool( p_intf, "qt-disable-volume-keys" );
+    MainInterface::reloadPrefs();
+}
+
+void MainInterfaceWin32::playlistItemAppended( int, int )
+{
+    changeThumbbarButtons( THEMIM->getIM()->playingStatus() );
+}
+
+void MainInterfaceWin32::playlistItemRemoved( int )
+{
+    changeThumbbarButtons( THEMIM->getIM()->playingStatus() );
+}
+
+void MainInterfaceWin32::changeThumbbarButtons( int i_status )
 {
     if( p_taskbl == NULL )
         return;
@@ -309,24 +396,24 @@ void MainInterface::changeThumbbarButtons( int i_status )
     thbButtons[0].dwMask = dwMask;
     thbButtons[0].iId = 0;
     thbButtons[0].iBitmap = 0;
+    thbButtons[0].dwFlags = THEPL->items.i_size > 1 ? THBF_ENABLED : THBF_HIDDEN;
 
     //play/pause
     thbButtons[1].dwMask = dwMask;
     thbButtons[1].iId = 1;
+    thbButtons[1].dwFlags = THBF_ENABLED;
 
     //next
     thbButtons[2].dwMask = dwMask;
     thbButtons[2].iId = 2;
     thbButtons[2].iBitmap = 3;
+    thbButtons[2].dwFlags = THEPL->items.i_size > 1 ? THBF_ENABLED : THBF_HIDDEN;
 
     switch( i_status )
     {
         case OPENING_S:
         case PLAYING_S:
             {
-                thbButtons[0].dwFlags = THBF_ENABLED;
-                thbButtons[1].dwFlags = THBF_ENABLED;
-                thbButtons[2].dwFlags = THBF_ENABLED;
                 thbButtons[1].iBitmap = 1;
                 break;
             }
@@ -334,9 +421,6 @@ void MainInterface::changeThumbbarButtons( int i_status )
         case PAUSE_S:
         case ERROR_S:
             {
-                thbButtons[0].dwFlags = THBF_ENABLED;
-                thbButtons[1].dwFlags = THBF_ENABLED;
-                thbButtons[2].dwFlags = THBF_ENABLED;
                 thbButtons[1].iBitmap = 2;
                 break;
             }
@@ -344,12 +428,19 @@ void MainInterface::changeThumbbarButtons( int i_status )
             return;
     }
 
-    HRESULT hr;
-    if( videoWidget && THEMIM->getIM()->hasVideo() )
-        hr =  p_taskbl->ThumbBarUpdateButtons(WinId(videoWidget), 3, thbButtons);
-    else
-        hr =  p_taskbl->ThumbBarUpdateButtons(WinId(this), 3, thbButtons);
+    HRESULT hr =  p_taskbl->ThumbBarUpdateButtons(WinId(this), 3, thbButtons);
 
     if(S_OK != hr)
         msg_Err( p_intf, "ThumbBarUpdateButtons failed with error %08lx", hr );
+
+    if( videoWidget && THEMIM->getIM()->hasVideo() )
+    {
+        RECT rect;
+        GetClientRect(WinId(videoWidget), &rect);
+        hr = p_taskbl->SetThumbnailClip(WinId(this), &rect);
+    }
+    else
+        hr = p_taskbl->SetThumbnailClip(WinId(this), NULL);
+    if(S_OK != hr)
+        msg_Err( p_intf, "SetThumbnailClip failed with error %08lx", hr );
 }

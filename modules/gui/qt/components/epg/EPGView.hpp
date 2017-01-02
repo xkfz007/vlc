@@ -60,20 +60,24 @@ public:
     void            setScale( double scaleFactor );
 
     const QDateTime& startTime() const;
-    QDateTime       liveTime() const;
+    QDateTime       epgTime() const;
+    void            setEpgTime(const QDateTime&);
 
     bool            updateEPG( const vlc_epg_t * const *, size_t );
     void            reset();
     void            cleanup();
     bool            hasValidData() const;
+    void            activateProgram( int );
 
 signals:
     void            rangeChanged( const QDateTime&, const QDateTime& );
     void            itemFocused( EPGItem * );
     void            programAdded( const EPGProgram * );
+    void            programActivated( int );
 
 protected:
     void            walkItems( bool );
+    QDateTime       m_epgTime;
     QDateTime       m_startTime;
     QDateTime       m_maxTime;
     QDateTime       m_updtMinTime; /* >= startTime before pruning */

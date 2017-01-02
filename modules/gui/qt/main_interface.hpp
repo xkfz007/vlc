@@ -92,9 +92,6 @@ public:
 protected:
     void dropEventPlay( QDropEvent* event, bool b_play ) { dropEventPlay(event, b_play, true); }
     void dropEventPlay( QDropEvent *, bool, bool );
-#ifdef _WIN32
-    virtual bool winEvent( MSG *, long * );
-#endif
     void changeEvent( QEvent * ) Q_DECL_OVERRIDE;
     void dropEvent( QDropEvent *) Q_DECL_OVERRIDE;
     void dragEnterEvent( QDragEnterEvent * ) Q_DECL_OVERRIDE;
@@ -104,8 +101,9 @@ protected:
     void keyPressEvent( QKeyEvent *) Q_DECL_OVERRIDE;
     void wheelEvent( QWheelEvent * ) Q_DECL_OVERRIDE;
     bool eventFilter(QObject *, QEvent *) Q_DECL_OVERRIDE;
+    virtual void toggleUpdateSystrayMenuWhenVisible();
 
-private:
+protected:
     /* Main Widgets Creation */
     void createMainWidget( QSettings* );
     void createStatusBar();
@@ -181,14 +179,6 @@ private:
     bool                 b_hasPausedWhenMinimized;
     bool                 b_statusbarVisible;
 
-#ifdef _WIN32
-    HWND WinId( QWidget *);
-    HIMAGELIST himl;
-    ITaskbarList3 *p_taskbl;
-    UINT taskbar_wmsg;
-    void createTaskBarButtons();
-#endif
-
     static const Qt::Key kc[10]; /* easter eggs */
     int i_kc_offset;
 
@@ -206,10 +196,6 @@ public slots:
     void setStatusBarVisibility(bool b_visible);
     void setPlaylistVisibility(bool b_visible);
 
-#ifdef _WIN32
-    void changeThumbbarButtons( int );
-#endif
-
     /* Manage the Video Functions from the vout threads */
     void getVideoSlot( WId *p_id, struct vout_window_t *,
                        unsigned *pi_width, unsigned *pi_height, bool );
@@ -218,10 +204,10 @@ public slots:
     void emitBoss();
     void emitRaise();
 
-    void reloadPrefs();
+    virtual void reloadPrefs();
     void toolBarConfUpdated();
 
-private slots:
+protected slots:
     void debug();
     void recreateToolbars();
     void setName( const QString& );
@@ -254,7 +240,7 @@ private slots:
 
     void setVideoSize( unsigned int, unsigned int );
     void videoSizeChanged( int, int );
-    void setVideoFullScreen( bool );
+    virtual void setVideoFullScreen( bool );
     void setHideMouse( bool );
     void setVideoOnTop( bool );
     void setBoss();

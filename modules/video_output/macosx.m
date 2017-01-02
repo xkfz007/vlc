@@ -267,8 +267,10 @@ static int Open (vlc_object_t *this)
 
         const vlc_fourcc_t *subpicture_chromas;
 
+        vlc_gl_MakeCurrent(sys->gl);
         sys->vgl = vout_display_opengl_New (&vd->fmt, &subpicture_chromas, sys->gl,
                                             &vd->cfg->viewpoint);
+        vlc_gl_ReleaseCurrent(sys->gl);
         if (!sys->vgl) {
             msg_Err(vd, "Error while initializing opengl display.");
             goto error;
@@ -326,7 +328,7 @@ void Close (vlc_object_t *this)
             vout_display_opengl_Delete (sys->vgl);
 
         if (sys->gl != NULL)
-            vlc_gl_Destroy (sys->gl);
+            vlc_object_release(sys->gl);
 
         [sys->glView release];
 

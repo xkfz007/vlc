@@ -1054,6 +1054,9 @@ static void EsOutProgramSelect( es_out_t *out, es_out_pgrm_t *p_pgrm )
         EsOutSelect( out, p_sys->es[i], false );
     }
 
+    /* Ensure the correct running EPG table is selected */
+    input_item_ChangeEPGSource( input_priv(p_input)->p_item, p_pgrm->i_id );
+
     /* Update now playing */
     input_item_SetESNowPlaying( input_priv(p_input)->p_item,
                                 p_pgrm->p_meta ? vlc_meta_Get( p_pgrm->p_meta, vlc_meta_ESNowPlaying ) : NULL );
@@ -1177,6 +1180,21 @@ static char *EsOutProgramGetMetaName( es_out_pgrm_t *p_pgrm )
         if( asprintf( &psz, _("%s [%s %d]"), vlc_meta_Get( p_pgrm->p_meta, vlc_meta_Title ),
                       _("Program"), p_pgrm->i_id ) == -1 )
             return NULL;
+    }
+    else
+    {
+        if( asprintf( &psz, "%s %d", _("Program"), p_pgrm->i_id ) == -1 )
+            return NULL;
+    }
+    return psz;
+}
+
+static char *EsOutProgramGetProgramName( es_out_pgrm_t *p_pgrm )
+{
+    char *psz = NULL;
+    if( p_pgrm->p_meta && vlc_meta_Get( p_pgrm->p_meta, vlc_meta_Title ) )
+    {
+        return strdup( vlc_meta_Get( p_pgrm->p_meta, vlc_meta_Title ) );
     }
     else
     {
@@ -1357,10 +1375,12 @@ static void EsOutProgramEpg( es_out_t *out, int i_group, const vlc_epg_t *p_epg 
     vlc_epg_t epg;
 
     epg = *p_epg;
-    epg.psz_name = psz_cat;
+    epg.psz_name = EsOutProgramGetProgramName( p_pgrm );
 
-    input_item_SetEpg( p_item, &epg );
+    input_item_SetEpg( p_item, &epg, p_sys->p_pgrm && (p_epg->i_source_id == p_sys->p_pgrm->i_id) );
     input_SendEventMetaEpg( p_sys->p_input );
+
+    free( epg.psz_name );
 
     /* Update now playing */
     if( p_epg->b_present && p_pgrm->p_meta &&
@@ -1408,6 +1428,15 @@ static void EsOutProgramEpg( es_out_t *out, int i_group, const vlc_epg_t *p_epg 
     }
 
     free( psz_cat );
+}
+
+static void EsOutEpgTime( es_out_t *out, int64_t time )
+{
+    es_out_sys_t      *p_sys = out->p_sys;
+    input_thread_t    *p_input = p_sys->p_input;
+    input_item_t      *p_item = input_priv(p_input)->p_item;
+
+    input_item_SetEpgTime( p_item, time );
 }
 
 static void EsOutProgramUpdateScrambled( es_out_t *p_out, es_out_pgrm_t *p_pgrm )
@@ -2490,6 +2519,13 @@ static int EsOutControlLocked( es_out_t *out, int i_query, va_list args )
         const vlc_epg_event_t *p_evt = va_arg( args, const vlc_epg_event_t * );
 
         EsOutProgramEpgEvent( out, i_group, p_evt );
+        return VLC_SUCCESS;
+    }
+    case ES_OUT_SET_EPG_TIME:
+    {
+        int i64 = (int64_t)va_arg( args, int64_t );
+
+        EsOutEpgTime( out, i64 );
         return VLC_SUCCESS;
     }
 

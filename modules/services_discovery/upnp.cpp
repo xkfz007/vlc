@@ -761,6 +761,159 @@ int MediaServerList::Callback( Upnp_EventType event_type, void* p_event )
 namespace Access
 {
 
+namespace
+{
+    class ItemDescriptionHolder
+    {
+    private:
+        struct Slave : std::string
+        {
+            slave_type type;
+
+            Slave(std::string const &url, slave_type type) :
+                std::string(url), type(type)
+            {
+            }
+        };
+
+        std::set<Slave> slaves;
+
+        const char* objectID,
+            * title,
+            * psz_artist,
+            * psz_genre,
+            * psz_album,
+            * psz_date,
+            * psz_orig_track_nb,
+            * psz_album_artist,
+            * psz_albumArt;
+
+    public:
+        enum MEDIA_TYPE
+            {
+                VIDEO = 0,
+                AUDIO,
+                IMAGE,
+                CONTAINER
+            };
+
+        MEDIA_TYPE media_type;
+
+        ItemDescriptionHolder()
+        {
+        }
+
+        bool init(IXML_Element *itemElement)
+        {
+            objectID = ixmlElement_getAttribute( itemElement, "id" );
+            if ( !objectID )
+                return false;
+            title = xml_getChildElementValue( itemElement, "dc:title" );
+            if ( !title )
+                return false;
+            const char *psz_subtitles = xml_getChildElementValue( itemElement, "sec:CaptionInfo" );
+            if ( !psz_subtitles &&
+                 !(psz_subtitles = xml_getChildElementValue( itemElement, "sec:CaptionInfoEx" )) )
+                psz_subtitles = xml_getChildElementValue( itemElement, "pv:subtitlefile" );
+            addSlave(psz_subtitles, SLAVE_TYPE_SPU);
+            psz_artist = xml_getChildElementValue( itemElement, "upnp:artist" );
+            psz_genre = xml_getChildElementValue( itemElement, "upnp:genre" );
+            psz_album = xml_getChildElementValue( itemElement, "upnp:album" );
+            psz_date = xml_getChildElementValue( itemElement, "dc:date" );
+            psz_orig_track_nb = xml_getChildElementValue( itemElement, "upnp:originalTrackNumber" );
+            psz_album_artist = xml_getChildElementValue( itemElement, "upnp:albumArtist" );
+            psz_albumArt = xml_getChildElementValue( itemElement, "upnp:albumArtURI" );
+            const char *psz_media_type = xml_getChildElementValue( itemElement, "upnp:class" );
+            if (strncmp(psz_media_type, "object.item.videoItem", 21) == 0)
+                media_type = VIDEO;
+            else if (strncmp(psz_media_type, "object.item.audioItem", 21) == 0)
+                media_type = AUDIO;
+            else if (strncmp(psz_media_type, "object.item.imageItem", 21) == 0)
+                media_type = IMAGE;
+            else if (strncmp(psz_media_type, "object.container", 16 ) == 0)
+                media_type = CONTAINER;
+            else
+                return false;
+            return true;
+        }
+
+        void addSlave(const char *psz_slave, slave_type type)
+        {
+            if (psz_slave)
+                slaves.insert(Slave(psz_slave, type));
+        }
+
+        void addSubtitleSlave(IXML_Element* p_resource)
+        {
+            if (slaves.empty())
+                addSlave(ixmlElement_getAttribute( p_resource, "pv:subtitleFileUri" ),
+                         SLAVE_TYPE_SPU);
+        }
+
+        void setArtworkURL(IXML_Element* p_resource)
+        {
+            psz_albumArt = xml_getChildElementValue( p_resource, "res" );
+        }
+
+        void apply(input_item_t *p_item)
+        {
+            if ( psz_artist != NULL )
+                input_item_SetArtist( p_item, psz_artist );
+            if ( psz_genre != NULL )
+                input_item_SetGenre( p_item, psz_genre );
+            if ( psz_album != NULL )
+                input_item_SetAlbum( p_item, psz_album );
+            if ( psz_date != NULL )
+                input_item_SetDate( p_item, psz_date );
+            if ( psz_orig_track_nb != NULL )
+                input_item_SetTrackNumber( p_item, psz_orig_track_nb );
+            if ( psz_album_artist != NULL )
+                input_item_SetAlbumArtist( p_item, psz_album_artist );
+            if ( psz_albumArt != NULL )
+                input_item_SetArtworkURL( p_item, psz_albumArt );
+            for (std::set<Slave>::iterator it = slaves.begin(); it != slaves.end(); ++it)
+            {
+                input_item_slave *p_slave = input_item_slave_New( it->c_str(), it->type,
+                                                                  SLAVE_PRIORITY_MATCH_ALL );
+                if ( p_slave )
+                    input_item_AddSlave( p_item, p_slave );
+            }
+        }
+
+        input_item_t *createNewItem(IXML_Element *p_resource)
+        {
+            mtime_t i_duration = -1;
+            const char* psz_resource_url = xml_getChildElementValue( p_resource, "res" );
+            if( !psz_resource_url )
+                return NULL;
+            const char* psz_duration = ixmlElement_getAttribute( p_resource, "duration" );
+            if ( psz_duration )
+            {
+                int i_hours, i_minutes, i_seconds;
+                if( sscanf( psz_duration, "%d:%02d:%02d", &i_hours, &i_minutes, &i_seconds ) )
+                    i_duration = INT64_C(1000000) * ( i_hours * 3600 + i_minutes * 60 +
+                                                      i_seconds );
+            }
+            return input_item_NewExt( psz_resource_url, title, i_duration,
+                                      ITEM_TYPE_FILE, ITEM_NET );
+        }
+
+        input_item_t *createNewContainerItem( const char* psz_root )
+        {
+            if ( objectID == NULL || title == NULL )
+                return NULL;
+
+            char* psz_url;
+            if( asprintf( &psz_url, "upnp://%s?ObjectID=%s", psz_root, objectID ) < 0 )
+                return NULL;
+
+            input_item_t* p_item = input_item_NewDirectory( psz_url, title, ITEM_NET );
+            free( psz_url);
+            return p_item;
+        }
+    };
+}
+
 Upnp_i11e_cb::Upnp_i11e_cb( Upnp_FunPtr callback, void *cookie )
     : m_refCount( 2 ) /* 2: owned by the caller, and the Upnp Async function */
     , m_callback( callback )
@@ -839,163 +992,19 @@ MediaServer::~MediaServer()
 
 bool MediaServer::addContainer( IXML_Element* containerElement )
 {
-    char* psz_url;
+    ItemDescriptionHolder holder;
 
-    const char* objectID = ixmlElement_getAttribute( containerElement, "id" );
-    if ( !objectID )
+    if ( holder.init( containerElement ) == false )
         return false;
 
-    const char* title = xml_getChildElementValue( containerElement, "dc:title" );
-    if ( !title )
-        return false;
-
-    if( asprintf( &psz_url, "upnp://%s?ObjectID=%s", m_psz_root, objectID ) < 0 )
-        return false;
-
-    input_item_t* p_item = input_item_NewDirectory( psz_url, title, ITEM_NET );
-    free( psz_url);
+    input_item_t* p_item = holder.createNewContainerItem( m_psz_root );
     if ( !p_item )
         return false;
+    holder.apply( p_item );
     input_item_CopyOptions( p_item, m_node->p_item );
     input_item_node_AppendItem( m_node, p_item );
     input_item_Release( p_item );
     return true;
-}
-
-namespace
-{
-    class ItemDescriptionHolder
-    {
-    private:
-        struct Slave : std::string
-        {
-            slave_type type;
-
-            Slave(std::string const &url, slave_type type) :
-                std::string(url), type(type)
-            {
-            }
-        };
-
-        std::set<Slave> slaves;
-
-        const char* objectID,
-            * title,
-            * psz_artist,
-            * psz_genre,
-            * psz_album,
-            * psz_date,
-            * psz_orig_track_nb,
-            * psz_album_artist,
-            * psz_albumArt;
-
-    public:
-        enum MEDIA_TYPE
-            {
-                VIDEO = 0,
-                AUDIO,
-                IMAGE
-            };
-
-        MEDIA_TYPE media_type;
-
-        ItemDescriptionHolder()
-        {
-        }
-
-        bool init(IXML_Element *itemElement)
-        {
-            objectID = ixmlElement_getAttribute( itemElement, "id" );
-            if ( !objectID )
-                return false;
-            title = xml_getChildElementValue( itemElement, "dc:title" );
-            if ( !title )
-                return false;
-            const char *psz_subtitles = xml_getChildElementValue( itemElement, "sec:CaptionInfo" );
-            if ( !psz_subtitles &&
-                 !(psz_subtitles = xml_getChildElementValue( itemElement, "sec:CaptionInfoEx" )) )
-                psz_subtitles = xml_getChildElementValue( itemElement, "pv:subtitlefile" );
-            addSlave(psz_subtitles, SLAVE_TYPE_SPU);
-            psz_artist = xml_getChildElementValue( itemElement, "upnp:artist" );
-            psz_genre = xml_getChildElementValue( itemElement, "upnp:genre" );
-            psz_album = xml_getChildElementValue( itemElement, "upnp:album" );
-            psz_date = xml_getChildElementValue( itemElement, "dc:date" );
-            psz_orig_track_nb = xml_getChildElementValue( itemElement, "upnp:originalTrackNumber" );
-            psz_album_artist = xml_getChildElementValue( itemElement, "upnp:albumArtist" );
-            psz_albumArt = xml_getChildElementValue( itemElement, "upnp:albumArtURI" );
-            const char *psz_media_type = xml_getChildElementValue( itemElement, "upnp:class" );
-            if (strncmp(psz_media_type, "object.item.videoItem", 21) == 0)
-                media_type = VIDEO;
-            else if (strncmp(psz_media_type, "object.item.audioItem", 21) == 0)
-                media_type = AUDIO;
-            else if (strncmp(psz_media_type, "object.item.imageItem", 21) == 0)
-                media_type = IMAGE;
-            else
-                return false;
-            return true;
-        }
-
-        void addSlave(const char *psz_slave, slave_type type)
-        {
-            if (psz_slave)
-                slaves.insert(Slave(psz_slave, type));
-        }
-
-        void addSubtitleSlave(IXML_Element* p_resource)
-        {
-            if (slaves.empty())
-                addSlave(ixmlElement_getAttribute( p_resource, "pv:subtitleFileUri" ),
-                         SLAVE_TYPE_SPU);
-        }
-
-        void setArtworkURL(IXML_Element* p_resource)
-        {
-            psz_albumArt = xml_getChildElementValue( p_resource, "res" );
-        }
-
-        void apply(input_item_t *p_item)
-        {
-            if ( psz_artist != NULL )
-                input_item_SetArtist( p_item, psz_artist );
-            if ( psz_genre != NULL )
-                input_item_SetGenre( p_item, psz_genre );
-            if ( psz_album != NULL )
-                input_item_SetAlbum( p_item, psz_album );
-            if ( psz_date != NULL )
-                input_item_SetDate( p_item, psz_date );
-            if ( psz_orig_track_nb != NULL )
-                input_item_SetTrackNumber( p_item, psz_orig_track_nb );
-            if ( psz_album_artist != NULL )
-                input_item_SetAlbumArtist( p_item, psz_album_artist );
-            if ( psz_albumArt != NULL )
-                input_item_SetArtworkURL( p_item, psz_albumArt );
-            for (std::set<Slave>::iterator it = slaves.begin(); it != slaves.end(); ++it)
-            {
-                input_item_slave *p_slave = input_item_slave_New( it->c_str(), it->type,
-                                                                  SLAVE_PRIORITY_MATCH_ALL );
-                if ( p_slave )
-                    input_item_AddSlave( p_item, p_slave );
-            }
-        }
-
-        input_item_t *createNewItem(IXML_Element *p_resource)
-        {
-            mtime_t i_duration = -1;
-            const char* psz_resource_url = xml_getChildElementValue( p_resource, "res" );
-            if( !psz_resource_url )
-                return NULL;
-            const char* psz_duration = ixmlElement_getAttribute( p_resource, "duration" );
-            if ( psz_duration )
-            {
-                int i_hours, i_minutes, i_seconds;
-                if( sscanf( psz_duration, "%d:%02d:%02d", &i_hours, &i_minutes, &i_seconds ) )
-                    i_duration = INT64_C(1000000) * ( i_hours * 3600 + i_minutes * 60 +
-                                                      i_seconds );
-            }
-            return input_item_NewExt( psz_resource_url, title, i_duration,
-                                      ITEM_TYPE_FILE, ITEM_NET );
-        }
-    };
 }
 
 bool MediaServer::addItem( IXML_Element* itemElement )
@@ -1038,6 +1047,9 @@ bool MediaServer::addItem( IXML_Element* itemElement )
             case ItemDescriptionHolder::AUDIO:
                 holder.setArtworkURL(p_resource);
                 break;
+            case ItemDescriptionHolder::CONTAINER:
+                msg_Warn( m_access, "Unexpected object.container in item enumeration" );
+                continue;
             }
         else if (strncmp(rez_type, "http-get:*:text/", 16) == 0)
             holder.addSlave(xml_getChildElementValue( p_resource, "res" ), SLAVE_TYPE_SPU);

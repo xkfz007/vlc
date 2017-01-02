@@ -144,6 +144,7 @@ static subpicture_region_t * vout_OSDEpgText(const char *text,
 
 
 static subpicture_region_t * vout_BuildOSDEpg(vlc_epg_t *epg,
+                                              int64_t epgtime,
                                               int x, int y,
                                               int visible_width,
                                               int visible_height)
@@ -151,7 +152,7 @@ static subpicture_region_t * vout_BuildOSDEpg(vlc_epg_t *epg,
     subpicture_region_t *head;
     subpicture_region_t **last_ptr = &head;
 
-    time_t current_time = time(NULL);
+    float f_progress = 0;
 
     /* Display the name of the channel. */
     *last_ptr = vout_OSDEpgText(epg->psz_name,
@@ -160,30 +161,33 @@ static subpicture_region_t * vout_BuildOSDEpg(vlc_epg_t *epg,
                                 visible_height * EPG_NAME_SIZE,
                                 0x00ffffff);
 
-    if (!*last_ptr)
-        return head;
+    if (*last_ptr)
+        last_ptr = &(*last_ptr)->p_next;
 
     /* Display the name of the current program. */
-    last_ptr = &(*last_ptr)->p_next;
-    *last_ptr = vout_OSDEpgText(epg->p_current->psz_name,
+    *last_ptr = vout_OSDEpgText(epg->p_current ? epg->p_current->psz_name : NULL,
                                 x + visible_width  * (EPG_LEFT + 0.025),
                                 y + visible_height * (EPG_TOP + 0.05),
                                 visible_height * EPG_PROGRAM_SIZE,
                                 0x00ffffff);
 
-    if (!*last_ptr)
-        return head;
+    if (*last_ptr)
+        last_ptr = &(*last_ptr)->p_next;
+
+    if(epgtime && epg->p_current)
+    {
+        f_progress = (epgtime - epg->p_current->i_start) /
+                     (float)epg->p_current->i_duration;
+    }
 
     /* Display the current program time slider. */
-    last_ptr = &(*last_ptr)->p_next;
     *last_ptr = vout_OSDEpgSlider(x + visible_width  * EPG_LEFT,
                                   y + visible_height * (EPG_TOP + 0.1),
                                   visible_width  * (1 - 2 * EPG_LEFT),
                                   visible_height * 0.05,
-                                  (current_time - epg->p_current->i_start)
-                                  / (float)epg->p_current->i_duration);
+                                  f_progress);
 
-    if (!*last_ptr)
+    if (!*last_ptr || !epg->p_current)
         return head;
 
     /* Format the hours of the beginning and the end of the current program. */
@@ -223,6 +227,7 @@ static subpicture_region_t * vout_BuildOSDEpg(vlc_epg_t *epg,
 struct subpicture_updater_sys_t
 {
     vlc_epg_t *epg;
+    int64_t    time;
 };
 
 static int OSDEpgValidate(subpicture_t *subpic,
@@ -255,6 +260,7 @@ static void OSDEpgUpdate(subpicture_t *subpic,
     subpic->i_original_picture_width  = fmt.i_width;
     subpic->i_original_picture_height = fmt.i_height;
     subpic->p_region = vout_BuildOSDEpg(sys->epg,
+                                        sys->time,
                                         fmt.i_x_offset,
                                         fmt.i_y_offset,
                                         fmt.i_visible_width,
@@ -276,36 +282,52 @@ static void OSDEpgDestroy(subpicture_t *subpic)
  */
 int vout_OSDEpg(vout_thread_t *vout, input_item_t *input)
 {
-    char *now_playing = input_item_GetNowPlayingFb(input);
     vlc_epg_t *epg = NULL;
+    int64_t epg_time;
 
     /* Look for the current program EPG event */
-    if(now_playing){
-        vlc_mutex_lock(&input->lock);
 
-        for (int i = 0; i < input->i_epg; i++) {
-            const vlc_epg_t *tmp = input->pp_epg[i];
+    vlc_mutex_lock(&input->lock);
 
-            if (tmp->p_current &&
-                tmp->p_current->psz_name &&
-                !strcmp(tmp->p_current->psz_name, now_playing)) {
-                 epg = vlc_epg_New(tmp->i_id, tmp->i_source_id);
-                if(epg){
-                    if(tmp->psz_name)
-                        epg->psz_name = strdup(tmp->psz_name);
-                    vlc_epg_Merge(epg, tmp);
+    const vlc_epg_t *tmp = input->p_epg_table;
+    if ( tmp )
+    {
+        /* Pick table designated event, or first/next one */
+        const vlc_epg_event_t *p_current_event = tmp->p_current;
+        epg = vlc_epg_New(tmp->i_id, tmp->i_source_id);
+        if(epg)
+        {
+            if( p_current_event )
+            {
+                vlc_epg_event_t *p_event = vlc_epg_event_Duplicate(p_current_event);
+                if(p_event)
+                {
+                    if(!vlc_epg_AddEvent(epg, p_event))
+                    {
+                        vlc_epg_Delete(epg);
+                        vlc_epg_event_Delete(p_event);
+                        epg = NULL;
+                    }
+                    else vlc_epg_SetCurrent(epg, p_event->i_start);
                 }
-                break;
             }
+            if(tmp->psz_name)
+                epg->psz_name = strdup(tmp->psz_name);
         }
-
-        vlc_mutex_unlock(&input->lock);
-        free(now_playing);
     }
+    else /* Always display something as user hotkey feedback */
+    {
+        epg = vlc_epg_New(0, 0);
+    }
+    epg_time = input->i_epg_time;
+    vlc_mutex_unlock(&input->lock);
 
     /* If no EPG event has been found. */
     if (epg == NULL)
         return VLC_EGENERIC;
+
+    if(epg->psz_name == NULL) /* Fallback (title == channel name) */
+        epg->psz_name = input_item_GetMeta( input, vlc_meta_Title );
 
     subpicture_updater_sys_t *sys = malloc(sizeof(*sys));
     if (!sys) {
@@ -313,6 +335,7 @@ int vout_OSDEpg(vout_thread_t *vout, input_item_t *input)
         return VLC_EGENERIC;
     }
     sys->epg = epg;
+    sys->time = epg_time;
     subpicture_updater_t updater = {
         .pf_validate = OSDEpgValidate,
         .pf_update   = OSDEpgUpdate,
